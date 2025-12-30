@@ -2,7 +2,7 @@ PLUGIN = nil
 
 function Initialize(Plugin)
 	Plugin:SetName("VanillaFeatureComplement")
-	Plugin:SetVersion(1)
+	Plugin:SetVersion(2)
 
     -- Load Config
     local path = Plugin:GetLocalFolder() .. "/settings.ini"
@@ -25,6 +25,10 @@ function Initialize(Plugin)
         LOG("HOOK_PLAYER_USING_ITEM and HOOK_TICK has been added to EnableElytraPoweredFlight")
         cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_USING_ITEM,StartPoweredFilghtOnPlayerUsingItem)
         cPluginManager:AddHook(cPluginManager.HOOK_TICK,SpeedUpPlayerOnTick)
+    end
+    if Config:GetValueSetB("Features","EnableSleepClearWeather",true) then
+        LOG("HOOK_PLAYER_USED_BLOCK has been added to EnableSleepClearWeather!")
+        cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_USED_BLOCK,ClearWeatherOnPlayerSleep)
     end
 	PLUGIN = Plugin -- NOTE: only needed if you want OnDisable() to use GetName() or something like that
 

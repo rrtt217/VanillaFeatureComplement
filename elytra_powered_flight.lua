@@ -24,7 +24,7 @@ function StartPoweredFilghtOnPlayerUsingItem(Player, BlockX, BlockY, BlockZ, Blo
     end
 end
 
--- Reference: https://zh.minecraft.wiki/w/%E9%9E%98%E7%BF%85
+-- Reference: https://zh.minecraft.wiki/w/%E9%9E%98%E7%BF%85 (not in English Minecraft Wiki)
 function SpeedUpPlayerOnTick(TimeDelta)
     cRoot:Get():ForEachPlayer(
         ---@param Player cPlayer

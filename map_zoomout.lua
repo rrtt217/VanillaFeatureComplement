@@ -1,5 +1,4 @@
 -- Enable zooming out on the in-game map when using a crafting table
--- Due to the limitation of the lua plugin, you don't need to actually finish the crafting process to zoom out the map.
 ---@param Player cPlayer
 ---@param Grid cCraftingGrid
 ---@param Recipe cCraftingRecipe
@@ -24,16 +23,8 @@ function MapZoomoutOnCraftingNoRecipe(Player, Grid, Recipe)
             end
         end
     end
-    -- All checks passed, zoom out the map
+    -- All checks passed, set lore as a mark to zoom out the map
     local MapItem = Grid:GetItem(1, 1)
-    -- Reference: https://github.com/cuberite/cuberite/blob/master/src/Items/ItemEmptyMap.h#L51
-    -- the damage value of the map item is NewMap->GetID() & 0x7fff. In short range 0-32767, it equals to MapID.
-    -- Now setting up callback to zoom out the map.
-    cRoot:Get():ForEachWorld(
-    ---@param World cWorld
-    function (World)
-        World:GetMapManager():DoWithMap(MapItem.m_ItemDamage,ZoomOutMap)
-    end)
     -- Set the recipe result.
     for x = 0, 2 do
         for y = 0, 2 do
@@ -44,9 +35,12 @@ function MapZoomoutOnCraftingNoRecipe(Player, Grid, Recipe)
             end
         end
     end
-    Recipe:SetResult(MapItem:CopyOne())
-    -- It seems that this doesn't work.
-    Recipe:ConsumeIngredients(Grid)
+    local result = MapItem:CopyOne()
+    local loretable = result.m_LoreTable
+    table.insert(loretable,"This map is waiting to be zoomed out by a plugin.")
+    result.m_LoreTable = loretable
+    _G.CheckZoomOut = true
+    Recipe:SetResult(result)
     return true
 end
 
@@ -65,5 +59,44 @@ function ZoomOutMap(Map)
             end
         end
         -- Now all set.
+    end
+end
+
+function CheckForZoomOutMapOnTick(TimeDelta)
+    if CheckZoomOut then
+        cRoot:Get():ForEachPlayer(
+            ---@param Player cPlayer
+            function (Player)
+                local inventory = Player:GetInventory()
+                for i = cInventory.invInventoryOffset, cInventory.invShieldOffset do
+                    local item = cItem(inventory:GetSlot(i))
+                    -- LOG("Item" .. tostring(i) .. "Lore:" .. tostring(item.m_Lore))
+                    if item.m_ItemType == E_ITEM_MAP and item.m_LoreTable then
+                        local loretable = item.m_LoreTable
+                        local match = false
+                        for j = #loretable, 1 ,-1 do
+                            if loretable[j] == "This map is waiting to be zoomed out by a plugin." then
+                                -- Reference: https://github.com/cuberite/cuberite/blob/master/src/Items/ItemEmptyMap.h#L51
+                                -- the damage value of the map item is NewMap->GetID() & 0x7fff. In short range 0-32767, it equals to MapID.
+                                -- Now setting up callback to zoom out the map.
+                                cRoot:Get():ForEachWorld(
+                                    ---@param World cWorld
+                                    function (World)
+                                        World:GetMapManager():DoWithMap(item.m_ItemDamage,ZoomOutMap)
+                                end)
+                                match = true
+                                -- removes the lore.
+                                table.remove(loretable,j)
+                            end
+                        end
+                        if match then
+                            item.m_LoreTable = loretable
+                            inventory:SetSlot(i,item)
+                            CheckZoomOut = false
+                        end
+                    end
+                end
+            end
+        )
     end
 end

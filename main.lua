@@ -12,6 +12,7 @@ function Initialize(Plugin)
     if Config:GetValueSetB("Features","EnableMapZoomout",true) then
         LOG("HOOK_CRAFTING_NO_RECIPE has been added to EnableMapZoomout!")
         cPluginManager:AddHook(cPluginManager.HOOK_CRAFTING_NO_RECIPE,MapZoomoutOnCraftingNoRecipe)
+        cPluginManager:AddHook(cPluginManager.HOOK_TICK,CheckForZoomOutMapOnTick)
     end
     if Config:GetValueSetB("Features","EnableMapClone",true) then
         LOG("HOOK_CRAFTING_NO_RECIPE has been added to EnableMapClone!")

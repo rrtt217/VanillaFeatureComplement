@@ -70,7 +70,6 @@ function CheckForZoomOutMapOnTick(TimeDelta)
                 local inventory = Player:GetInventory()
                 for i = cInventory.invInventoryOffset, cInventory.invShieldOffset do
                     local item = cItem(inventory:GetSlot(i))
-                    -- LOG("Item" .. tostring(i) .. "Lore:" .. tostring(item.m_Lore))
                     if item.m_ItemType == E_ITEM_MAP and item.m_LoreTable then
                         local loretable = item.m_LoreTable
                         local match = false

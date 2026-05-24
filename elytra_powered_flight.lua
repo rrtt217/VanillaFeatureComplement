@@ -34,9 +34,9 @@ function SpeedUpPlayerOnTick(TimeDelta)
             function (Entity)
                 if Lastpos and Player:IsElytraFlying() then
                     local look_vector = Vector3d(Player:GetLookVector())
-                    -- LOG("Speed:".. "x" .. tostring(speed.x) .. "y"  .. tostring(speed.y) .. "z" .. tostring(speed.z))
                     -- Speed always returns 0, so use pos - lastpos.
-                    local final_speed = Vector3d((0.85*(Player:GetPosX() - Lastpos.x) + 0.5*look_vector.x)/TimeDelta*1000 ,(0.85*(Player:GetPosY() - Lastpos.y) + 0.5*look_vector.y)/TimeDelta*1000 ,(0.85*(Player:GetPosZ() - Lastpos.z) + 0.5*look_vector.z)/TimeDelta*1000 )
+                    local speed = ((Vector3d((Player:GetPosX() - Lastpos.x), (Player:GetPosY() - Lastpos.y), (Player:GetPosZ() - Lastpos.z))) / TimeDelta) * 1000
+                    local final_speed = speed * 0.5 + look_vector * 1000 / TimeDelta * 0.85
                     Player:SetSpeed(final_speed)
                     Entity:SetSpeed(final_speed)
                     Entity:SetPosition(Player:GetPosition())
@@ -45,8 +45,9 @@ function SpeedUpPlayerOnTick(TimeDelta)
         )
             if (not Player.ElytraFireWorkID or Player.ElytraFireWorkID == 0) and (Player.ElytraFireWorkTime and Player.ElytraFireWorkTime >= 0) and Lastpos and Player:IsElytraFlying() then
                 local look_vector = Vector3d(Player:GetLookVector())
-                -- LOG("Speed:".. "x" .. tostring(speed.x) .. "y"  .. tostring(speed.y) .. "z" .. tostring(speed.z))
-                local final_speed = Vector3d((0.85*(Player:GetPosX() - Lastpos.x) + 0.5*look_vector.x)/TimeDelta*1000 ,(0.85*(Player:GetPosY() - Lastpos.y) + 0.5*look_vector.y)/TimeDelta*1000 ,(0.85*(Player:GetPosZ() - Lastpos.z) + 0.5*look_vector.z)/TimeDelta*1000 )
+                -- Speed always returns 0, so use pos - lastpos.
+                local speed = ((Vector3d((Player:GetPosX() - Lastpos.x), (Player:GetPosY() - Lastpos.y), (Player:GetPosZ() - Lastpos.z))) / TimeDelta) * 1000
+                local final_speed = speed * 0.5 + look_vector * 1000 / TimeDelta * 0.85
                 Player:SetSpeed(final_speed)
                 Player.ElytraFireWorkTime = Player.ElytraFireWorkTime - 1
             end

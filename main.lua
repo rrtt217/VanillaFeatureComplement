@@ -31,6 +31,14 @@ function Initialize(Plugin)
         LOG("HOOK_PLAYER_USED_BLOCK has been added to EnableSleepClearWeather!")
         cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_USED_BLOCK,ClearWeatherOnPlayerSleep)
     end
+    if Config:GetValueSetB("Features","EnableShield",true) then
+        LOG("Shield hooks have been added to EnableShield!")
+        cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_USING_ITEM,CheckUseShieldOnUsingItem)
+        cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_SHOOTING,CheckUseShieldOnShooting)
+        cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_TOSSING_ITEM,CheckUseShieldOnTossingItem)
+        cPluginManager:AddHook(cPluginManager.HOOK_TICK,CheckUseShieldOnTick)
+        cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_RIGHT_CLICK,CheckUseShieldOnRightClick)
+    end
 	PLUGIN = Plugin -- NOTE: only needed if you want OnDisable() to use GetName() or something like that
 
 	-- Command Bindings

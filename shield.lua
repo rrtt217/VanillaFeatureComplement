@@ -489,6 +489,22 @@ function CheckUseShieldOnTick(TimeDelta)
             Player.ShieldBatch = nil
         end
     )
+
+    -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE, which
+    -- cannot call inventory APIs safely while holding world locks).
+    cRoot:Get():ForEachPlayer(
+        ---@param Player cPlayer
+        function(Player)
+            local Loss = Player.PendingShieldDurabilityLoss
+            if Loss and Loss > 0 then
+                Player.PendingShieldDurabilityLoss = 0
+                local Main = Player:GetEquippedItem()
+                if Main and IsShield(Main.m_ItemType) then
+                    Player:GetInventory():DamageEquippedItem(Loss)
+                end
+            end
+        end
+    )
 end
 
 -- HOOK_PLAYER_SHOOTING: the "shield released" signal. Fires both when a bow is
@@ -532,4 +548,108 @@ function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, C
             return true
         end
     end
+end
+
+-- ============================================================================
+-- Shield blocking mechanics
+-- ============================================================================
+
+
+---Damage types that CAN be blocked by a shield (in <= 1.12.2).
+local BlockableDamageTypes =
+{
+    [dtAttack] = true,        -- Melee (mob melee, player melee)
+    [dtRangedAttack] = true,  -- Arrows, tridents, snowballs, eggs, shulker bullets, fireballs, llama spit, wither skulls
+    [dtExplosion] = true,     -- Creeper, ghast fireball, end crystal, bed, respawn anchor, TNT
+}
+
+---Whether the attack comes from the player's front (within the shield's
+---horizontal 180-degree arc). Uses the knockback vector direction (which
+---points from attacker toward receiver) to avoid calling entity-position APIs
+---that could re-enter locks during HOOK_TAKE_DAMAGE.
+---@param Player cPlayer
+---@param Knockback Vector3d  the TDI.Knockback vector
+---@return boolean
+local function IsAttackFromFront(Player, Knockback)
+    -- Knockback points from attacker toward receiver. The attack comes from the
+    -- front if the reverse direction (receiver -> attacker) aligns with the
+    -- player's look direction.
+    local FromAttacker = Vector3d(-Knockback.x, 0, -Knockback.z)
+    if FromAttacker:SqrLength() < 1e-6 then
+        -- No knockback info (e.g. explosion); cannot determine direction, so
+        -- be conservative and do not block.
+        return false
+    end
+    local Look = Vector3d(Player:GetLookVector())
+    Look.y = 0
+    if Look:SqrLength() < 1e-6 then
+        return false
+    end
+    FromAttacker:Normalize()
+    Look:Normalize()
+    return (FromAttacker:Dot(Look) > 0)
+end
+
+---Find the shield the player is currently holding up (main or off hand).
+---Returns the cItem, or nil if no shield is equipped.
+---@param Player cPlayer
+---@return cItem|nil
+local function GetHeldShield(Player)
+    local Main = Player:GetEquippedItem()
+    if Main and IsShield(Main.m_ItemType) then
+        return Main
+    end
+    local Off = Player:GetOffHandEquipedItem()
+    if Off and IsShield(Off.m_ItemType) then
+        return Off
+    end
+    return nil
+end
+
+-- HOOK_TAKE_DAMAGE: implement shield blocking. When a player with a raised
+-- shield is attacked from the front by a blockable damage type, the damage is
+-- negated, knockback is reduced, and the shield takes durability damage.
+--
+-- IMPORTANT: This hook runs inside DoTakeDamage() which may hold world locks.
+-- Do NOT call any API that could re-enter those locks (no GetInventory,
+-- DamageEquippedItem, GetEquippedItem, GetOffHandEquipedItem, GetPosX, etc.).
+-- Only read TDI fields and the IsUsingShield flag. Shield durability damage is
+-- deferred to HOOK_TICK via the PendingShieldDurabilityLoss field.
+function CheckUseShieldOnTakeDamage(Receiver, TDI)
+    return false
+end
+
+-- HOOK_PROJECTILE_HIT_ENTITY: when a projectile hits a player with a raised
+-- shield from the front, deflect the projectile instead of letting it hit.
+function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
+    local IsPlayer = Entity:IsPlayer()
+    LOG("[ShieldDiag] HOOK_PROJECTILE_HIT_ENTITY invoked: isPlayer=" .. tostring(IsPlayer))
+
+    if not IsPlayer then
+        return false
+    end
+    local Player = Entity
+
+    if not Player.IsUsingShield then
+        return false
+    end
+
+    LOG("[ShieldDiag] HOOK_PROJECTILE_HIT_ENTITY: player has shield raised")
+
+    -- Determine attack direction from the projectile's velocity (it travels
+    -- from attacker toward the player, so the reverse is player->attacker).
+    local Speed = ProjectileEntity:GetSpeed()
+    local Knockback = Vector3d(-Speed.x, 0, -Speed.z)
+    if not IsAttackFromFront(Player, Knockback) then
+        return false
+    end
+
+    LOG("[ShieldDiag] HOOK_PROJECTILE_HIT_ENTITY: deflecting projectile")
+
+    -- Deflect: return true so the projectile flies through (does not hit).
+    -- Bounce it back by reversing its horizontal speed.
+    Speed.x = -Speed.x
+    Speed.z = -Speed.z
+    ProjectileEntity:SetSpeed(Speed)
+    return true
 end

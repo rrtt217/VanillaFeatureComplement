@@ -38,6 +38,10 @@ function Initialize(Plugin)
         cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_TOSSING_ITEM,CheckUseShieldOnTossingItem)
         cPluginManager:AddHook(cPluginManager.HOOK_TICK,CheckUseShieldOnTick)
         cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_RIGHT_CLICK,CheckUseShieldOnRightClick)
+        -- HOOK_TAKE_DAMAGE intentionally NOT registered: it causes a deadlock in
+        -- Cuberite (empty callback still deadlocks). Shield damage blocking is
+        -- therefore not implemented.
+        cPluginManager:AddHook(cPluginManager.HOOK_PROJECTILE_HIT_ENTITY,CheckUseShieldOnProjectileHitEntity)
     end
 	PLUGIN = Plugin -- NOTE: only needed if you want OnDisable() to use GetName() or something like that
 

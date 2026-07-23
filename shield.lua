@@ -385,6 +385,15 @@ end
 -- rod, bow) the decision is immediate. For conditional items (buckets, flint,
 -- firework) the event is recorded in a per-tick batch and evaluated in the next
 -- tick's HOOK_TICK, so all events of the same right-click are combined.
+---@param Player cPlayer
+---@param BlockX number
+---@param BlockY number
+---@param BlockZ number
+---@param BlockFace number
+---@param CursorX number
+---@param CursorY number
+---@param CursorZ number
+---@return boolean|nil  true to cancel the item use, nil/false otherwise
 function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
     local Item = Player:GetEquippedItem()
     local ItemOffhand = Player:GetOffHandEquipedItem()
@@ -448,6 +457,7 @@ end
 
 -- HOOK_TICK: process any pending shield batch from the previous tick. If the
 -- main-hand item was not consumed across all batched events, raise the shield.
+---@param TimeDelta number  milliseconds since the last tick
 function CheckUseShieldOnTick(TimeDelta)
     cRoot:Get():ForEachPlayer(
         ---@param Player cPlayer
@@ -510,6 +520,8 @@ end
 -- HOOK_PLAYER_SHOOTING: the "shield released" signal. Fires both when a bow is
 -- shot and when a raised shield is lowered (same SHOOT status packet), so this
 -- is the reliable release event.
+---@param Player cPlayer
+---@return boolean|nil  true to cancel the shot, nil/false otherwise
 function CheckUseShieldOnShooting(Player)
     ReleaseShield(Player)
 end
@@ -518,6 +530,8 @@ end
 -- item was the shield currently being held up, or if neither hand holds a
 -- shield anymore (the shield got moved away). Dropping a normal item does NOT
 -- release the shield.
+---@param Player cPlayer
+---@return boolean|nil  true to cancel the toss, nil/false otherwise
 function CheckUseShieldOnTossingItem(Player)
     local Item = Player:GetEquippedItem()
     local ItemOffhand = Player:GetOffHandEquipedItem()
@@ -536,6 +550,15 @@ end
 -- block is processed as the (empty) main hand and the server does nothing.
 -- Returning true cancels the packet so the client does not play an animation
 -- the server ignores (e.g. raising an offhand shield that never raises).
+---@param Player cPlayer
+---@param BlockX number
+---@param BlockY number
+---@param BlockZ number
+---@param BlockFace number
+---@param CursorX number
+---@param CursorY number
+---@param CursorZ number
+---@return boolean|nil  true to cancel the right-click, nil/false otherwise
 function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
     local ItemOffhand = Player:GetOffHandEquipedItem()
     if ItemOffhand and not ItemOffhand:IsEmpty() then
@@ -564,30 +587,34 @@ local BlockableDamageTypes =
 }
 
 ---Whether the attack comes from the player's front (within the shield's
----horizontal 180-degree arc). Uses the knockback vector direction (which
----points from attacker toward receiver) to avoid calling entity-position APIs
----that could re-enter locks during HOOK_TAKE_DAMAGE.
+---horizontal 180-degree arc). Uses the relative position of the attacker
+---(or projectile) to the player.
 ---@param Player cPlayer
----@param Knockback Vector3d  the TDI.Knockback vector
+---@param Attacker cEntity  the attacking entity (mob or projectile)
 ---@return boolean
-local function IsAttackFromFront(Player, Knockback)
-    -- Knockback points from attacker toward receiver. The attack comes from the
-    -- front if the reverse direction (receiver -> attacker) aligns with the
-    -- player's look direction.
-    local FromAttacker = Vector3d(-Knockback.x, 0, -Knockback.z)
-    if FromAttacker:SqrLength() < 1e-6 then
-        -- No knockback info (e.g. explosion); cannot determine direction, so
-        -- be conservative and do not block.
+local function IsAttackFromFront(Player, Attacker)
+    if not Attacker then
         return false
     end
+    -- Vector from player to attacker (horizontal only).
+    local ToAttacker = Vector3d(
+        Attacker:GetPosX() - Player:GetPosX(),
+        0,
+        Attacker:GetPosZ() - Player:GetPosZ()
+    )
+    if ToAttacker:SqrLength() < 1e-6 then
+        return true  -- Attacker is essentially on top of the player; block it.
+    end
+    -- Player's look vector (horizontal only).
     local Look = Vector3d(Player:GetLookVector())
     Look.y = 0
     if Look:SqrLength() < 1e-6 then
         return false
     end
-    FromAttacker:Normalize()
+    ToAttacker:Normalize()
     Look:Normalize()
-    return (FromAttacker:Dot(Look) > 0)
+    -- Dot > 0 means the attacker is in front (angle < 90 degrees).
+    return (ToAttacker:Dot(Look) > 0)
 end
 
 ---Find the shield the player is currently holding up (main or off hand).
@@ -610,22 +637,24 @@ end
 -- shield is attacked from the front by a blockable damage type, the damage is
 -- negated, knockback is reduced, and the shield takes durability damage.
 --
--- IMPORTANT: This hook runs inside DoTakeDamage() which may hold world locks.
--- Do NOT call any API that could re-enter those locks (no GetInventory,
--- DamageEquippedItem, GetEquippedItem, GetOffHandEquipedItem, GetPosX, etc.).
--- Only read TDI fields and the IsUsingShield flag. Shield durability damage is
--- deferred to HOOK_TICK via the PendingShieldDurabilityLoss field.
+-- NOTE: This hook is NOT registered because it causes a deadlock in Cuberite
+-- (an empty callback still deadlines). Shield damage blocking against melee
+-- and explosions is therefore not implemented. The function is kept for
+-- reference in case the Cuberite bug is fixed.
+---@param Receiver cEntity  the entity taking damage
+---@param TDI TakeDamageInfo  the damage info, modifiable
+---@return boolean  true to cancel the damage
 function CheckUseShieldOnTakeDamage(Receiver, TDI)
     return false
 end
 
 -- HOOK_PROJECTILE_HIT_ENTITY: when a projectile hits a player with a raised
 -- shield from the front, deflect the projectile instead of letting it hit.
+---@param ProjectileEntity cProjectileEntity  the projectile
+---@param Entity cEntity  the entity being hit
+---@return boolean  true to make the projectile fly through (no hit)
 function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
-    local IsPlayer = Entity:IsPlayer()
-    LOG("[ShieldDiag] HOOK_PROJECTILE_HIT_ENTITY invoked: isPlayer=" .. tostring(IsPlayer))
-
-    if not IsPlayer then
+    if not Entity:IsPlayer() then
         return false
     end
     local Player = Entity
@@ -634,20 +663,20 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
         return false
     end
 
-    LOG("[ShieldDiag] HOOK_PROJECTILE_HIT_ENTITY: player has shield raised")
-
-    -- Determine attack direction from the projectile's velocity (it travels
-    -- from attacker toward the player, so the reverse is player->attacker).
-    local Speed = ProjectileEntity:GetSpeed()
-    local Knockback = Vector3d(-Speed.x, 0, -Speed.z)
-    if not IsAttackFromFront(Player, Knockback) then
+    -- Determine attack direction from the projectile's position relative to the
+    -- player (the projectile is at the attacker's side when it hits).
+    if not IsAttackFromFront(Player, ProjectileEntity) then
         return false
     end
 
-    LOG("[ShieldDiag] HOOK_PROJECTILE_HIT_ENTITY: deflecting projectile")
+    if ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkArrow then
+        ProjectileEntity:Destroy()
+        return true
+    end
 
-    -- Deflect: return true so the projectile flies through (does not hit).
+    -- Deflect(For Arrows): return true so the projectile flies through (does not hit).
     -- Bounce it back by reversing its horizontal speed.
+    local Speed = ProjectileEntity:GetSpeed()
     Speed.x = -Speed.x
     Speed.z = -Speed.z
     ProjectileEntity:SetSpeed(Speed)

@@ -56,6 +56,102 @@ local MinecartItems =
     [E_ITEM_MINECART_WITH_HOPPER] = true,
 }
 
+---All hoe variants. Consumed when tilling grass / dirt into farmland.
+local HoeItems =
+{
+    [E_ITEM_WOODEN_HOE] = true,
+    [E_ITEM_STONE_HOE] = true,
+    [E_ITEM_IRON_HOE] = true,
+    [E_ITEM_GOLD_HOE] = true,
+    [E_ITEM_DIAMOND_HOE] = true,
+}
+
+---All shovel variants. Consumed when flattening grass / dirt into grass path.
+local ShovelItems =
+{
+    [E_ITEM_WOODEN_SHOVEL] = true,
+    [E_ITEM_STONE_SHOVEL] = true,
+    [E_ITEM_IRON_SHOVEL] = true,
+    [E_ITEM_GOLD_SHOVEL] = true,
+    [E_ITEM_DIAMOND_SHOVEL] = true,
+}
+
+---Helmet items (including leather cap). Equipped in the helmet slot.
+local HelmetItems =
+{
+    [E_ITEM_LEATHER_CAP] = true,
+    [E_ITEM_GOLD_HELMET] = true,
+    [E_ITEM_CHAIN_HELMET] = true,
+    [E_ITEM_IRON_HELMET] = true,
+    [E_ITEM_DIAMOND_HELMET] = true,
+}
+
+---Chestplate items (including elytra). Equipped in the chestplate slot.
+local ChestplateItems =
+{
+    [E_ITEM_LEATHER_TUNIC] = true,
+    [E_ITEM_GOLD_CHESTPLATE] = true,
+    [E_ITEM_CHAIN_CHESTPLATE] = true,
+    [E_ITEM_IRON_CHESTPLATE] = true,
+    [E_ITEM_DIAMOND_CHESTPLATE] = true,
+    [E_ITEM_ELYTRA] = true,
+}
+
+---Leggings items. Equipped in the leggings slot.
+local LeggingsItems =
+{
+    [E_ITEM_LEATHER_PANTS] = true,
+    [E_ITEM_GOLD_LEGGINGS] = true,
+    [E_ITEM_CHAIN_LEGGINGS] = true,
+    [E_ITEM_IRON_LEGGINGS] = true,
+    [E_ITEM_DIAMOND_LEGGINGS] = true,
+}
+
+---Boots items. Equipped in the boots slot.
+local BootsItems =
+{
+    [E_ITEM_LEATHER_BOOTS] = true,
+    [E_ITEM_GOLD_BOOTS] = true,
+    [E_ITEM_CHAIN_BOOTS] = true,
+    [E_ITEM_IRON_BOOTS] = true,
+    [E_ITEM_DIAMOND_BOOTS] = true,
+}
+
+---All food items. Consumed when the player is hungry (not satiated).
+---Includes drinkable items (milk, potion) which use the same path.
+local FoodItems =
+{
+    [E_ITEM_RED_APPLE] = true,
+    [E_ITEM_GOLDEN_APPLE] = true,
+    [E_ITEM_BREAD] = true,
+    [E_ITEM_RAW_PORKCHOP] = true,
+    [E_ITEM_COOKED_PORKCHOP] = true,
+    [E_ITEM_RAW_FISH] = true,
+    [E_ITEM_COOKED_FISH] = true,
+    [E_ITEM_RAW_BEEF] = true,
+    [E_ITEM_STEAK] = true,
+    [E_ITEM_RAW_CHICKEN] = true,
+    [E_ITEM_COOKED_CHICKEN] = true,
+    [E_ITEM_ROTTEN_FLESH] = true,
+    [E_ITEM_RAW_MUTTON] = true,
+    [E_ITEM_COOKED_MUTTON] = true,
+    [E_ITEM_RAW_RABBIT] = true,
+    [E_ITEM_COOKED_RABBIT] = true,
+    [E_ITEM_RABBIT_STEW] = true,
+    [E_ITEM_BEETROOT] = true,
+    [E_ITEM_BEETROOT_SOUP] = true,
+    [E_ITEM_CARROT] = true,
+    [E_ITEM_BAKED_POTATO] = true,
+    [E_ITEM_POISONOUS_POTATO] = true,
+    [E_ITEM_CHORUS_FRUIT] = true,
+    [E_ITEM_PUMPKIN_PIE] = true,
+    [E_ITEM_MELON_SLICE] = true,
+    [E_ITEM_SPIDER_EYE] = true,
+    [E_ITEM_COOKIE] = true,
+    [E_ITEM_MILK] = true,
+    [E_ITEM_POTION] = true,
+}
+
 ---Whether the block at the given coords is a rail (any variant).
 ---@param World cWorld
 ---@param BlockX number
@@ -158,6 +254,34 @@ local function EvaluateEvent(Player, Type, BlockX, BlockY, BlockZ)
             return false, true
         end
         return IsRail(Player:GetWorld(), BlockX, BlockY, BlockZ), true
+    end
+    if HoeItems[Type] or ShovelItems[Type] then
+        -- Hoe / shovel: consumed only against grass / dirt; definitive either way.
+        if IsAirUse then
+            return false, true
+        end
+        local BlockType = Player:GetWorld():GetBlock(Vector3i(BlockX, BlockY, BlockZ))
+        return BlockType == E_BLOCK_GRASS or BlockType == E_BLOCK_DIRT, true
+    end
+    if HelmetItems[Type] then
+        -- Helmet: consumed only if the helmet slot is empty; definitive.
+        return Player:GetEquippedHelmet():IsEmpty(), true
+    end
+    if ChestplateItems[Type] then
+        -- Chestplate / elytra: consumed only if the chestplate slot is empty.
+        return Player:GetEquippedChestplate():IsEmpty(), true
+    end
+    if LeggingsItems[Type] then
+        -- Leggings: consumed only if the leggings slot is empty.
+        return Player:GetEquippedLeggings():IsEmpty(), true
+    end
+    if BootsItems[Type] then
+        -- Boots: consumed only if the boots slot is empty.
+        return Player:GetEquippedBoots():IsEmpty(), true
+    end
+    if FoodItems[Type] then
+        -- Food / drink: consumed only when the player is hungry (not satiated).
+        return not Player:IsSatiated(), true
     end
     if Type == E_ITEM_SPAWN_EGG then
         -- Spawn egg: consumed against a solid block. Against a non-solid block

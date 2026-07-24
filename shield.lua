@@ -455,62 +455,61 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
         " cursor " .. CursorX .. "," .. CursorY .. "," .. CursorZ)
 end
 
--- HOOK_TICK: process any pending shield batch from the previous tick. If the
+-- HOOK_WORLD_TICK: process any pending shield batch from the previous tick. If the
 -- main-hand item was not consumed across all batched events, raise the shield.
+---@param World cWorld
 ---@param TimeDelta number  milliseconds since the last tick
-function CheckUseShieldOnTick(TimeDelta)
-    cRoot:Get():ForEachPlayer(
+---@param LastTickDurationMSec number
+function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
+    World:ForEachPlayer(
         ---@param Player cPlayer
         function(Player)
+            -- Process pending shield batch from the previous tick.
             local Batch = Player.ShieldBatch
-            if not Batch or #Batch == 0 then
-                return
-            end
-            -- Only process batches from a previous tick; same-tick batches are
-            -- still being collected.
-            local WorldAge = Player:GetWorld():GetWorldAge()
-            if Player.ShieldBatchTick == WorldAge then
-                return
+            if Batch and #Batch > 0 then
+                local WorldAge = Player:GetWorld():GetWorldAge()
+                if Player.ShieldBatchTick ~= WorldAge then
+                    local Name = Player:GetName()
+                    LOG("Player " .. Name .. " evaluating batch of " .. #Batch ..
+                        " event(s) from worldage " .. Player.ShieldBatchTick ..
+                        " (now " .. WorldAge .. ")")
+                    for i, Ev in ipairs(Batch) do
+                        LOG("  event #" .. i ..
+                            " type " .. Ev.ItemType ..
+                            " consumed=" .. tostring(Ev.Consumed) ..
+                            " definitive=" .. tostring(Ev.Definitive) ..
+                            " block " .. Ev.BlockX .. "," .. Ev.BlockY .. "," .. Ev.BlockZ ..
+                            " cursor " .. Ev.CursorX .. "," .. Ev.CursorY .. "," .. Ev.CursorZ ..
+                            " worldage " .. Ev.WorldAge)
+                    end
+
+                    local Consumed = EvaluateBatch(Player)
+                    local CurrentType = Player:GetEquippedItem().m_ItemType
+                    LOG("Player " .. Name .. " batch result: consumed=" .. tostring(Consumed) ..
+                        " batchItemType=" .. Player.ShieldBatchItemType ..
+                        " currentItemType=" .. CurrentType)
+
+                    if not Consumed then
+                        RaiseShield(Player)
+                    end
+                end
+                Player.ShieldBatch = nil
             end
 
-            local Name = Player:GetName()
-            LOG("Player " .. Name .. " evaluating batch of " .. #Batch ..
-                " event(s) from worldage " .. Player.ShieldBatchTick ..
-                " (now " .. WorldAge .. ")")
-            for i, Ev in ipairs(Batch) do
-                LOG("  event #" .. i ..
-                    " type " .. Ev.ItemType ..
-                    " consumed=" .. tostring(Ev.Consumed) ..
-                    " definitive=" .. tostring(Ev.Definitive) ..
-                    " block " .. Ev.BlockX .. "," .. Ev.BlockY .. "," .. Ev.BlockZ ..
-                    " cursor " .. Ev.CursorX .. "," .. Ev.CursorY .. "," .. Ev.CursorZ ..
-                    " worldage " .. Ev.WorldAge)
-            end
-
-            local Consumed = EvaluateBatch(Player)
-            local CurrentType = Player:GetEquippedItem().m_ItemType
-            LOG("Player " .. Name .. " batch result: consumed=" .. tostring(Consumed) ..
-                " batchItemType=" .. Player.ShieldBatchItemType ..
-                " currentItemType=" .. CurrentType)
-
-            if not Consumed then
-                RaiseShield(Player)
-            end
-            Player.ShieldBatch = nil
-        end
-    )
-
-    -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE, which
-    -- cannot call inventory APIs safely while holding world locks).
-    cRoot:Get():ForEachPlayer(
-        ---@param Player cPlayer
-        function(Player)
+            -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
             local Loss = Player.PendingShieldDurabilityLoss
             if Loss and Loss > 0 then
                 Player.PendingShieldDurabilityLoss = 0
                 local Main = Player:GetEquippedItem()
                 if Main and IsShield(Main.m_ItemType) then
+                    LOG("Player " .. Player:GetName() .. " shield (main hand) took " .. Loss .. " durability damage")
                     Player:GetInventory():DamageEquippedItem(Loss)
+                else
+                    local Off = Player:GetOffHandEquipedItem()
+                    if Off and IsShield(Off.m_ItemType) then
+                        LOG("Player " .. Player:GetName() .. " shield (offhand) took " .. Loss .. " durability damage")
+                        Player:GetInventory():DamageItem(cInventory.invShieldOffset, Loss)
+                    end
                 end
             end
         end
@@ -588,20 +587,29 @@ local BlockableDamageTypes =
 
 ---Whether the attack comes from the player's front (within the shield's
 ---horizontal 180-degree arc). Uses the relative position of the attacker
----(or projectile) to the player.
+---when available; falls back to the knockback vector direction for attacks
+---without an attacker (e.g. explosions).
 ---@param Player cPlayer
----@param Attacker cEntity  the attacking entity (mob or projectile)
+---@param Attacker cEntity|nil  the attacking entity (mob or projectile), or nil
+---@param Knockback Vector3d|nil  the TDI.Knockback vector, used when Attacker is nil
 ---@return boolean
-local function IsAttackFromFront(Player, Attacker)
-    if not Attacker then
+local function IsAttackFromFront(Player, Attacker, Knockback)
+    local ToAttacker
+    if Attacker then
+        -- Vector from player to attacker (horizontal only).
+        ToAttacker = Vector3d(
+            Attacker:GetPosX() - Player:GetPosX(),
+            0,
+            Attacker:GetPosZ() - Player:GetPosZ()
+        )
+    elseif Knockback then
+        -- Knockback points from attacker toward receiver. Reverse it to get
+        -- the direction from receiver toward attacker.
+        ToAttacker = Vector3d(-Knockback.x, 0, -Knockback.z)
+    else
         return false
     end
-    -- Vector from player to attacker (horizontal only).
-    local ToAttacker = Vector3d(
-        Attacker:GetPosX() - Player:GetPosX(),
-        0,
-        Attacker:GetPosZ() - Player:GetPosZ()
-    )
+
     if ToAttacker:SqrLength() < 1e-6 then
         return true  -- Attacker is essentially on top of the player; block it.
     end
@@ -636,16 +644,52 @@ end
 -- HOOK_TAKE_DAMAGE: implement shield blocking. When a player with a raised
 -- shield is attacked from the front by a blockable damage type, the damage is
 -- negated, knockback is reduced, and the shield takes durability damage.
---
--- NOTE: This hook is NOT registered because it causes a deadlock in Cuberite
--- (an empty callback still deadlines). Shield damage blocking against melee
--- and explosions is therefore not implemented. The function is kept for
--- reference in case the Cuberite bug is fixed.
 ---@param Receiver cEntity  the entity taking damage
 ---@param TDI TakeDamageInfo  the damage info, modifiable
 ---@return boolean  true to cancel the damage
 function CheckUseShieldOnTakeDamage(Receiver, TDI)
-    return false
+    -- Only players can use shields.
+    if not Receiver:IsPlayer() then
+        return false
+    end
+    local Player = Receiver
+
+    -- Log the damage event for debugging.
+    local AttackerPos = "nil"
+    if TDI.Attacker then
+        AttackerPos = TDI.Attacker:GetPosX() .. "," .. TDI.Attacker:GetPosY() .. "," .. TDI.Attacker:GetPosZ()
+    end
+    LOG("Player " .. Player:GetName() .. " took damage: type=" .. tostring(TDI.DamageType)
+        .. " raw=" .. tostring(TDI.RawDamage)
+        .. " final=" .. tostring(TDI.FinalDamage)
+        .. " attackerPos=" .. AttackerPos
+        .. " shieldRaised=" .. tostring(Player.IsUsingShield))
+
+    -- The shield must be raised (IsUsingShield flag set by USING_ITEM).
+    if not Player.IsUsingShield then
+        return false
+    end
+
+    -- Only blockable damage types.
+    if not BlockableDamageTypes[TDI.DamageType] then
+        return false
+    end
+
+    -- The attack must come from the front.
+    if not IsAttackFromFront(Player, TDI.Attacker, TDI.Knockback) then
+        return false
+    end
+
+    -- Record the blocked amount so HOOK_WORLD_TICK can apply shield durability
+    -- loss later. Return true to cancel the damage entirely (no damage, no
+    -- knockback, no hurt animation).
+    local BlockedDamage = TDI.FinalDamage
+    if BlockedDamage >= 3 then
+        Player.PendingShieldDurabilityLoss = (Player.PendingShieldDurabilityLoss or 0)
+            + math.floor(BlockedDamage) + 1
+    end
+
+    return true
 end
 
 -- HOOK_PROJECTILE_HIT_ENTITY: when a projectile hits a player with a raised

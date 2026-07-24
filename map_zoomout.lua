@@ -62,9 +62,9 @@ function ZoomOutMap(Map)
     end
 end
 
-function CheckForZoomOutMapOnTick(TimeDelta)
+function CheckForZoomOutMapOnTick(World, TimeDelta, LastTickDurationMSec)
     if CheckZoomOut then
-        cRoot:Get():ForEachPlayer(
+        World:ForEachPlayer(
             ---@param Player cPlayer
             function (Player)
                 local inventory = Player:GetInventory()

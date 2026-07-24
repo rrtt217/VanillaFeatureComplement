@@ -11,7 +11,7 @@ function StartPoweredFilghtOnPlayerUsingItem(Player, BlockX, BlockY, BlockZ, Blo
     if Player:GetWorld():GetBlock(Vector3i(BlockX,BlockY,BlockZ)) == E_BLOCK_AIR and Player:GetEquippedItem().m_ItemType == E_ITEM_FIREWORK_ROCKET and Player:IsElytraFlying() then
         Player.ElytraFireWorkID = Player:GetWorld():CreateProjectile(Player:GetPosX(),Player:GetPosY(),Player:GetPosZ(),cProjectileEntity.pkFirework,Player,Player:GetEquippedItem(),Player:GetSpeed())
         if Player:GetGameMode() == gmSurvival then
-            Player:TossEquippedItem(1)
+            Player:GetInventory():RemoveOneEquippedItem()
         end
         if Player.ElytraFireWorkID == 0 then
             math.randomseed(os.time())
@@ -25,8 +25,8 @@ function StartPoweredFilghtOnPlayerUsingItem(Player, BlockX, BlockY, BlockZ, Blo
 end
 
 -- Reference: https://zh.minecraft.wiki/w/%E9%9E%98%E7%BF%85 (not in English Minecraft Wiki)
-function SpeedUpPlayerOnTick(TimeDelta)
-    cRoot:Get():ForEachPlayer(
+function SpeedUpPlayerOnTick(World, TimeDelta, LastTickDurationMSec)
+    World:ForEachPlayer(
         ---@param Player cPlayer
         function (Player)
             Player:GetWorld():DoWithEntityByID(Player.ElytraFireWorkID or 0,

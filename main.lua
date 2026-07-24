@@ -41,6 +41,10 @@ function Initialize(Plugin)
         cPluginManager:AddHook(cPluginManager.HOOK_TAKE_DAMAGE,CheckUseShieldOnTakeDamage)
         cPluginManager:AddHook(cPluginManager.HOOK_PROJECTILE_HIT_ENTITY,CheckUseShieldOnProjectileHitEntity)
     end
+    if Config:GetValueSetB("Features","EnablePlayerKilledXpDropFix",true) then
+        LOG("HOOK_KILLING has been added to EnablePlayerKilledXpDropFix!")
+        cPluginManager:AddHook(cPluginManager.HOOK_KILLING,OnKillingDropXpAndOffhand)
+    end
 	PLUGIN = Plugin -- NOTE: only needed if you want OnDisable() to use GetName() or something like that
 
 	-- Command Bindings

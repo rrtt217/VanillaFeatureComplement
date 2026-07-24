@@ -12,3 +12,6 @@ Currently includes:
     - Limitation: offhand shield raising uses per-tick batched USING_ITEM events and heuristics, so certain clients or rare interaction patterns may still mis-detect shield use (currently only support viaforge/viafabricplus, not vanilla); durability is emulated because Cuberite has no native shield durability support
 - End platform generation
 - Sleep clears weather
+- Player death XP and off-hand drop fix
+    - Players drop experience orbs worth min(7 × level, 100) on death, regardless of cause
+    - The off-hand (shield) slot item is dropped on death (Cuberite clears it without dropping)

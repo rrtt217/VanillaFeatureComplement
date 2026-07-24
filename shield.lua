@@ -497,18 +497,35 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
             end
 
             -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
+            -- Cuberite does not implement shield durability natively, so we use a
+            -- probability-based break: chance = loss / 336, reduced by Unbreaking.
             local Loss = Player.PendingShieldDurabilityLoss
             if Loss and Loss > 0 then
                 Player.PendingShieldDurabilityLoss = 0
+                local ShieldItem, SlotNum
                 local Main = Player:GetEquippedItem()
                 if Main and IsShield(Main.m_ItemType) then
-                    LOG("Player " .. Player:GetName() .. " shield (main hand) took " .. Loss .. " durability damage")
-                    Player:GetInventory():DamageEquippedItem(Loss)
+                    ShieldItem = Main
+                    SlotNum = nil  -- main hand, use DamageEquippedItem-like removal
                 else
                     local Off = Player:GetOffHandEquipedItem()
                     if Off and IsShield(Off.m_ItemType) then
-                        LOG("Player " .. Player:GetName() .. " shield (offhand) took " .. Loss .. " durability damage")
-                        Player:GetInventory():DamageItem(cInventory.invShieldOffset, Loss)
+                        ShieldItem = Off
+                        SlotNum = cInventory.invShieldOffset
+                    end
+                end
+                if ShieldItem then
+                    local UnbreakingLevel = ShieldItem.m_Enchantments:GetLevel(cEnchantments.enchUnbreaking)
+                    local BreakChance = (Loss / 336) * (100 / (UnbreakingLevel + 1)) / 100
+                    LOG("Player " .. Player:GetName() .. " shield break chance: " .. tostring(BreakChance)
+                        .. " (loss=" .. Loss .. " unbreaking=" .. UnbreakingLevel .. ")")
+                    if math.random() < BreakChance then
+                        LOG("Player " .. Player:GetName() .. " shield broke!")
+                        if SlotNum then
+                            Player:GetInventory()
+                        else
+                            Player:GetInventory():SetShieldSlot(cItem())
+                        end
                     end
                 end
             end
@@ -713,7 +730,7 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
         return false
     end
 
-    if ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkArrow then
+    if ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkArrow and ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkGhastFireball then
         ProjectileEntity:Destroy()
         return true
     end

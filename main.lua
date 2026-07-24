@@ -2,7 +2,7 @@ PLUGIN = nil
 
 function Initialize(Plugin)
 	Plugin:SetName("VanillaFeatureComplement")
-	Plugin:SetVersion(2)
+	Plugin:SetVersion(3)
 
     -- Load Config
     local path = Plugin:GetLocalFolder() .. "/settings.ini"

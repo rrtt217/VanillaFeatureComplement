@@ -320,6 +320,8 @@ end
 ---type changed since the batch started (e.g. bucket -> water_bucket), which
 ---catches the "scoop shallow fluid with no block in reach" case that produces
 ---only air events but still consumes the bucket.
+---
+---The batched events mechanism relies heavily on specific knowledge of how certain client sends USING_ITEM events for each item type. For now it only works on ViaFabricPlus/ViaForge.
 ---@param Player cPlayer
 ---@return boolean
 local function EvaluateBatch(Player)
@@ -468,7 +470,6 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
             local Batch = Player.ShieldBatch
             if Batch and #Batch > 0 then
                 local WorldAge = Player:GetWorld():GetWorldAge()
-                if Player.ShieldBatchTick ~= WorldAge then
                     local Name = Player:GetName()
                     LOG("Player " .. Name .. " evaluating batch of " .. #Batch ..
                         " event(s) from worldage " .. Player.ShieldBatchTick ..
@@ -492,7 +493,6 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
                     if not Consumed then
                         RaiseShield(Player)
                     end
-                end
                 Player.ShieldBatch = nil
             end
 

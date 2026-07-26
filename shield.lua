@@ -545,6 +545,7 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
                         .. " (loss=" .. Loss .. " unbreaking=" .. UnbreakingLevel .. ")")
                     if math.random() < BreakChance then
                         LOG("Player " .. Player:GetName() .. " shield broke!")
+                        ReleaseShield(Player)
                         if SlotNum then
                             Player:GetInventory():SetShieldSlot(cItem())
                         else

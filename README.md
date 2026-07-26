@@ -9,7 +9,7 @@ Currently includes:
     - Raises main- or offhand shield when right-click does not consume the main hand item
     - Blocks melee, ranged, and explosion damage from the front
     - Deflects projectiles and applies simulated shield durability loss
-    - Limitation: offhand shield raising uses per-tick batched USING_ITEM events and heuristics, so certain clients or rare interaction patterns may still mis-detect shield use (currently only support viaforge/viafabricplus, not vanilla); durability is emulated because Cuberite has no native shield durability support
+    - Limitation: offhand shield raising uses heuristics, so rare interaction patterns may still mis-detect shield use; durability is emulated because Cuberite has no native shield durability support
 - End platform generation
 - Sleep clears weather
 - Player death XP and off-hand drop fix

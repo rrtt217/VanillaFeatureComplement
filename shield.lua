@@ -1,4 +1,4 @@
--- Shield usage tracking with event batching.
+-- Shield usage tracking.
 --
 -- Cuberite has no dedicated shield hook. Shields go through the generic item-use
 -- path in cClientHandle::HandleRightClick (the ItemUseable branch):
@@ -13,13 +13,11 @@
 -- main-hand shield first if both hands hold shields.
 --
 -- Bucket items produce MULTIPLE USING_ITEM/USED_ITEM events per right-click
--- (some targeting the clicked block, some targeting air at (-1,255,-1)). To
--- handle this, events for "conditional" items (buckets, flint-and-steel,
--- firework) are batched per tick and evaluated in HOOK_TICK of the next tick.
--- Additionally, USED_ITEM checks whether the equipped item type changed (e.g.
--- bucket -> water_bucket) to detect successful consumption that the event
--- position alone can't reveal (e.g. scooping a shallow fluid with no block in
--- reach produces only an air event, but the bucket IS consumed).
+-- (some targeting the clicked block, some targeting air at (-1,255,-1)). Each
+-- event is resolved independently: when the reported coords are an air use,
+-- GetTargetedBlock re-traces the player's eye ray to recover the real targeted
+-- block, so the consumed/not-consumed decision is reliable per-event and no
+-- cross-event batching is needed.
 
 ---Items that unconditionally consume the right-click and so never raise the
 ---shield when held in the main hand.
@@ -117,12 +115,18 @@ local BootsItems =
     [E_ITEM_DIAMOND_BOOTS] = true,
 }
 
----All food items. Consumed when the player is hungry (not satiated).
----Includes drinkable items (milk, potion) which use the same path.
+---All food items. In Cuberite, food (cItemFoodHandler descendants, which
+---override IsFood() to true) cannot be used at all in creative mode --
+---HandleUseItem returns early before StartEating / HOOK_PLAYER_USING_ITEM,
+---so these never reach us in creative. In survival they are consumed only
+---when the player is hungry (not satiated).
+---
+---Golden apple and chorus fruit are EXCLUDED from this table: Cuberite's
+---HandleUseItem special-cases them so they bypass the creative/satiated
+---guard and are still eaten in creative mode (see SpecialFoodItems).
 local FoodItems =
 {
     [E_ITEM_RED_APPLE] = true,
-    [E_ITEM_GOLDEN_APPLE] = true,
     [E_ITEM_BREAD] = true,
     [E_ITEM_RAW_PORKCHOP] = true,
     [E_ITEM_COOKED_PORKCHOP] = true,
@@ -143,77 +147,143 @@ local FoodItems =
     [E_ITEM_CARROT] = true,
     [E_ITEM_BAKED_POTATO] = true,
     [E_ITEM_POISONOUS_POTATO] = true,
-    [E_ITEM_CHORUS_FRUIT] = true,
     [E_ITEM_PUMPKIN_PIE] = true,
     [E_ITEM_MELON_SLICE] = true,
     [E_ITEM_SPIDER_EYE] = true,
     [E_ITEM_COOKIE] = true,
+}
+
+---Special food items (golden apple, chorus fruit). Cuberite's HandleUseItem
+---special-cases these so they bypass the creative-mode / satiated guard that
+---blocks normal food -- they are still eaten in creative mode. The client,
+---however, does not play the eating animation in creative, so it treats the
+---right-click as empty and would raise the shield. Since the server actually
+---processes the eat (effects applied, chorus fruit teleports), the right-click
+---IS consumed and the shield should NOT rise.
+local SpecialFoodItems =
+{
+    [E_ITEM_GOLDEN_APPLE] = true,
+    [E_ITEM_CHORUS_FRUIT] = true,
+}
+
+---Drinkable items (milk, potion). Unlike food, these are NOT blocked in
+---creative mode -- Cuberite routes them through IsDrinkable() rather than
+---IsFood(), so HandleUseItem does not apply the creative/satiated guard.
+---They are always consumed (the right-click is used up), even though the
+---item itself may not be removed from the inventory in creative.
+local DrinkableItems =
+{
     [E_ITEM_MILK] = true,
     [E_ITEM_POTION] = true,
 }
 
----Whether the block at the given coords is a rail (any variant).
----@param World cWorld
----@param BlockX number
----@param BlockY number
----@param BlockZ number
+---Whether the given block type is a rail (any variant).
+---@param BlockType number
 ---@return boolean
-local function IsRail(World, BlockX, BlockY, BlockZ)
-    local BlockType = World:GetBlock(Vector3i(BlockX, BlockY, BlockZ))
+local function IsRail(BlockType)
     return BlockType == E_BLOCK_RAIL
         or BlockType == E_BLOCK_POWERED_RAIL
         or BlockType == E_BLOCK_DETECTOR_RAIL
         or BlockType == E_BLOCK_ACTIVATOR_RAIL
 end
 
----Items whose consumption depends on the target block / state. These are
----batched per tick and evaluated together, because a single right-click can
----produce multiple USING_ITEM events (some targeting air).
-local ConditionalItems =
-{
-    [E_ITEM_BUCKET] = true,
-    [E_ITEM_WATER_BUCKET] = true,
-    [E_ITEM_LAVA_BUCKET] = true,
-    [E_ITEM_FLINT_AND_STEEL] = true,
-    [E_ITEM_FIREWORK_ROCKET] = true,
-}
-
----Whether the block at the given coords is a fluid (water / lava, flowing or
----still). Returns true for fluids, false for anything else (including air).
----@param World cWorld
----@param BlockX number
----@param BlockY number
----@param BlockZ number
+---Whether the given block type is a fluid (water / lava, flowing or still).
+---@param BlockType number
 ---@return boolean
-local function IsFluid(World, BlockX, BlockY, BlockZ)
-    local BlockType = World:GetBlock(Vector3i(BlockX, BlockY, BlockZ))
+local function IsFluid(BlockType)
     return BlockType == E_BLOCK_WATER
         or BlockType == E_BLOCK_STATIONARY_WATER
         or BlockType == E_BLOCK_LAVA
         or BlockType == E_BLOCK_STATIONARY_LAVA
 end
 
----Whether the block at the given coords is a non-fluid, non-air solid surface.
----@param World cWorld
----@param BlockX number
----@param BlockY number
----@param BlockZ number
+---Whether the given block type is a non-fluid, non-air solid surface.
+---@param BlockType number
 ---@return boolean
-local function IsSolidSurface(World, BlockX, BlockY, BlockZ)
-    local BlockType = World:GetBlock(Vector3i(BlockX, BlockY, BlockZ))
-    return BlockType ~= E_BLOCK_AIR and not IsFluid(World, BlockX, BlockY, BlockZ)
+local function IsSolidSurface(BlockType)
+    return BlockType ~= E_BLOCK_AIR and not IsFluid(BlockType)
+end
+
+---The player's default block interaction reach: the maximum line-segment
+---distance from the eye to the intersection with a block's outline box.
+---This is the segment length from eye to hit point, NOT the distance to the
+---block's nearest point.
+local PLAYER_REACH = 4.5
+
+---Determine the block the given player is currently interacting with (the
+---block their crosshair is aiming at).
+---
+---Casts a ray from the player's eye along the look direction and returns the
+---first non-air block the ray passes through within MaxDistance. If no
+---non-air block is hit within MaxDistance, returns E_BLOCK_AIR.
+---
+---Implementation notes:
+---  * cLineBlockTracer:Trace does a DDA traversal that visits blocks in
+---    near-to-far order (by ray-wall-crossing coefficient 0 -> 1) and only
+---    reports blocks the segment [Start, End] actually passes through. So
+---    the first non-air block reported IS the targeted block, and End
+---    (= EyePos + Look * MaxDistance) already enforces the distance limit --
+---    no manual distance / intersection check is needed.
+---  * We cannot use cLineBlockTracer:FirstSolidHitTrace because it uses
+---    cBlockInfo::IsSolid(), which treats fluids (water / lava) as
+---    non-solid and skips them. Bucket scooping needs to target fluids,
+---    so we use Trace with a custom "first non-air" callback instead.
+---  * Cuberite's Lua API does not expose the actual block outline boxes
+---    (cBlockHandler's collision/outline box interfaces are not exported),
+---    so the DDA's full-cube traversal is the best approximation available.
+---    For non-full blocks (stairs, slabs, fences, etc.) this is more lenient
+---    than vanilla (a ray grazing their air portion still counts as a hit).
+---    For this plugin's use case -- deciding whether a right-click with a
+---    bucket / flint-and-steel / firework hit a block -- this is sufficient.
+---@param Player cPlayer
+---@param MaxDistance number?  max interaction distance (segment length), defaults to PLAYER_REACH (4.5)
+---@return BLOCKTYPE BlockType  block type (E_BLOCK_AIR if none)
+---@return Vector3i|nil BlockPos  block coords (nil if none)
+local function GetTargetedBlock(Player, MaxDistance)
+    MaxDistance = MaxDistance or PLAYER_REACH
+    local World = Player:GetWorld()
+    local EyePos = Player:GetEyePosition()
+    local Look = Player:GetLookVector()
+    Look:Normalize()
+    local End = EyePos + Look * MaxDistance
+
+    local Result = { BlockType = E_BLOCK_AIR, BlockPos = nil }
+
+    local Callbacks =
+    {
+        OnNextBlock = function(BlockPos, BlockType, BlockMeta, EntryFace)
+            if BlockType == E_BLOCK_AIR then
+                return false  -- Air: keep tracing
+            end
+            -- First non-air block: the DDA only reports blocks the segment
+            -- [EyePos, End] passes through, so this is the targeted block.
+            Result.BlockType = BlockType
+            Result.BlockPos = BlockPos
+            return true  -- Hit, stop tracing
+        end,
+    }
+
+    cLineBlockTracer:Trace(World, Callbacks, EyePos, End)
+    return Result.BlockType, Result.BlockPos
 end
 
 ---Whether a single USING_ITEM event indicates the main-hand item was consumed.
----For conditional items this is a per-event guess; the final decision is made
----by combining all events of the tick (see EvaluateBatch).
+---
+---The event's reported block coords can be (-1,255,-1) ("air use") even when
+---the player is actually aiming at a block -- the client sometimes targets air
+---for the secondary events of a single right-click. The caller resolves this
+---by passing the real targeted block's type: for air-use events it comes from
+---GetTargetedBlock (a server-side eye-ray trace), for normal events it comes
+---from World:GetBlock at the reported coords. The per-event decision is then
+---reliable on its own and no cross-event batching is needed.
 ---@param Player cPlayer
 ---@param Type number  item type at the time of the event
----@param BlockX number
----@param BlockY number
----@param BlockZ number
----@return boolean consumed, boolean definitive  (definitive=false => needs batching)
-local function EvaluateEvent(Player, Type, BlockX, BlockY, BlockZ)
+---@param BlockType number  block type the player is actually aiming at
+---  (E_BLOCK_AIR if nothing is in reach; for air-use events this is the
+---   GetTargetedBlock result, for normal events it is World:GetBlock at the
+---   reported coords)
+---@return boolean consumed, boolean definitive  (definitive=false => caller still raises shield if not consumed)
+local function EvaluateEvent(Player, Type, BlockType)
     if ProjectileItems[Type] then
         return true, true
     end
@@ -224,43 +294,54 @@ local function EvaluateEvent(Player, Type, BlockX, BlockY, BlockZ)
         return Player:IsGameModeCreative() or Player:GetInventory():HasItems(cItem(E_ITEM_ARROW)), true
     end
 
-    local IsAirUse = (BlockX == -1 and BlockY == 255 and BlockZ == -1)
+    -- BlockType == E_BLOCK_AIR means the player is aiming at nothing within
+    -- reach (either a real air use, or an air-use event whose eye-ray trace
+    -- also found nothing). All block-dependent items below are not consumed
+    -- in that case.
+    local IsAir = (BlockType == E_BLOCK_AIR)
 
     -- The `Consumed` property for bucket interaction events is not precise. We do not actually rely on it though.
     if Type == E_ITEM_WATER_BUCKET or Type == E_ITEM_LAVA_BUCKET then
-        -- Placing fluid: consumed only against a solid surface.
-        if IsAirUse then
-            return false, false
-        end
-        return IsSolidSurface(Player:GetWorld(), BlockX, BlockY, BlockZ), false
+        -- Placing fluid: consumed iff the player's reach contains a solid
+        -- block to pour onto. This is NOT the same as "the first non-air
+        -- block is solid" -- the player may be aiming through a fluid (e.g.
+        -- water covering a stone floor) and still place the fluid on the
+        -- solid block beneath. Use FirstSolidHitTrace, which skips fluids
+        -- (cBlockInfo::IsSolid returns false for water / lava) and reports
+        -- the first solid block within reach, if any.
+        local EyePos = Player:GetEyePosition()
+        local Look = Player:GetLookVector()
+        Look:Normalize()
+        local End = EyePos + Look * PLAYER_REACH
+        local HasSolid = cLineBlockTracer:FirstSolidHitTrace(Player:GetWorld(), EyePos, End)
+        return HasSolid, true
     end
     if Type == E_ITEM_BUCKET then
         -- Scooping: consumed only against a fluid.
-        if IsAirUse then
-            return false, false
+        if IsAir then
+            return false, true
         end
-        return IsFluid(Player:GetWorld(), BlockX, BlockY, BlockZ), false
+        return IsFluid(BlockType), true
     end
     if BoatItems[Type] then
         -- Boats: same logic as the empty bucket -- placed on a fluid.
-        if IsAirUse then
-            return false, false
+        if IsAir then
+            return false, true
         end
-        return IsFluid(Player:GetWorld(), BlockX, BlockY, BlockZ), false
+        return IsFluid(BlockType), true
     end
     if MinecartItems[Type] then
         -- Minecarts: consumed only when placed on a rail; definitive either way.
-        if IsAirUse then
+        if IsAir then
             return false, true
         end
-        return IsRail(Player:GetWorld(), BlockX, BlockY, BlockZ), true
+        return IsRail(BlockType), true
     end
     if HoeItems[Type] or ShovelItems[Type] then
         -- Hoe / shovel: consumed only against grass / dirt; definitive either way.
-        if IsAirUse then
+        if IsAir then
             return false, true
         end
-        local BlockType = Player:GetWorld():GetBlock(Vector3i(BlockX, BlockY, BlockZ))
         return BlockType == E_BLOCK_GRASS or BlockType == E_BLOCK_DIRT, true
     end
     if HelmetItems[Type] then
@@ -280,81 +361,51 @@ local function EvaluateEvent(Player, Type, BlockX, BlockY, BlockZ)
         return Player:GetEquippedBoots():IsEmpty(), true
     end
     if FoodItems[Type] then
-        -- Food / drink: consumed only when the player is hungry (not satiated).
+        -- Food: in creative mode Cuberite blocks use entirely (HandleUseItem
+        -- returns before HOOK_PLAYER_USING_ITEM), so this branch is only
+        -- reached in survival / adventure. There, food is consumed only when
+        -- the player is hungry (not satiated).
         return not Player:IsSatiated(), true
     end
+    if SpecialFoodItems[Type] then
+        -- Golden apple / chorus fruit: Cuberite special-cases these so they
+        -- are eaten even in creative mode (effects applied, chorus fruit
+        -- teleports). The right-click is always consumed, so the shield must
+        -- not rise -- even though the client plays no eat animation in
+        -- creative and would otherwise treat this as an empty right-click.
+        return true, true
+    end
+    if DrinkableItems[Type] then
+        -- Drinkables (milk, potion): usable in all gamemodes, the right-click
+        -- is always consumed.
+        return true, true
+    end
     if Type == E_ITEM_SPAWN_EGG then
-        -- Spawn egg: consumed against a solid block. Against a non-solid block
-        -- (fluid / air) the server can't tell, so default to consumed.
-        if IsAirUse then
-            return true, true
-        end
-        local BlockType = Player:GetWorld():GetBlock(Vector3i(BlockX, BlockY, BlockZ))
-        if BlockType == E_BLOCK_AIR or IsFluid(Player:GetWorld(), BlockX, BlockY, BlockZ) then
-            return true, true
+        -- Spawn egg: consumed iff it actually spawns a mob, i.e. the player is
+        -- aiming at a non-air block (solid or fluid). Aiming at nothing within
+        -- reach does NOT consume the egg.
+        if IsAir then
+            return false, true
         end
         return true, true
     end
     if Type == E_ITEM_FLINT_AND_STEEL then
-        if IsAirUse then
-            return false, false
+        if IsAir then
+            return false, true
         end
-        return IsSolidSurface(Player:GetWorld(), BlockX, BlockY, BlockZ), true
+        return IsSolidSurface(BlockType), true
     end
     if Type == E_ITEM_FIREWORK_ROCKET then
         if Player:IsElytraFlying() then
             return true, true
         end
-        if IsAirUse then
-            return false, false
+        if IsAir then
+            return false, true
         end
-        return IsSolidSurface(Player:GetWorld(), BlockX, BlockY, BlockZ), true
+        return IsSolidSurface(BlockType), true
     end
 
     return false, true
-end
-
----Combine all batched events for a player in a tick to decide whether the
----main-hand item was consumed. If any event is definitively consumed, the
----item was used. Otherwise fall back to checking whether the equipped item
----type changed since the batch started (e.g. bucket -> water_bucket), which
----catches the "scoop shallow fluid with no block in reach" case that produces
----only air events but still consumes the bucket.
----
----The batched events mechanism relies heavily on specific knowledge of how certain client sends USING_ITEM events for each item type. For now it only works on ViaFabricPlus/ViaForge.
----@param Player cPlayer
----@return boolean
-local function EvaluateBatch(Player)
-    local Batch = Player.ShieldBatch
-    if not Batch or #Batch == 0 then
-        return false
-    end
-
-    --- Typical empty bucket right clicking a solid block without a fluid in reach produces 4 USING_ITEM events:
-    if #Batch >= 3 then
-        return false
-    end
-
-    --- Typical empty bucket right clicking fluids without reaching a solid block produces 1 USING_ITEM events:
-    if #Batch == 1 then
-        return true
-    end
-
-    --- Typical empty bucket right clicking a shallow fluid with solid block in reach produces 2 USING_ITEM events, not all of their position are (-1,255,-1):
-    --- Typical water/lava bucket placing fluids on a solid block produces 2 USING_ITEM events, not all of their position are (-1,255,-1):
-    --- Typical bucket-air interactions produces 2 USING_ITEM events, all of their position are (-1,255,-1):
-    if #Batch == 2 then
-        local Ev1 = Batch[1]
-        local Ev2 = Batch[2]
-        if Ev1.BlockX == -1 and Ev1.BlockY == 255 and Ev1.BlockZ == -1 and
-           Ev2.BlockX == -1 and Ev2.BlockY == 255 and Ev2.BlockZ == -1 then
-            return false
-        else
-            return true
-        end
-    end
-
-    return false
 end
 
 ---Whether the item is a shield.
@@ -383,10 +434,10 @@ local function ReleaseShield(Player)
 end
 
 -- HOOK_PLAYER_USING_ITEM: the "shield raised" signal, fired on the tick the
--- client pressed right-click. For unconditional items (projectiles, fishing
--- rod, bow) the decision is immediate. For conditional items (buckets, flint,
--- firework) the event is recorded in a per-tick batch and evaluated in the next
--- tick's HOOK_TICK, so all events of the same right-click are combined.
+-- client pressed right-click. For each event we decide immediately whether
+-- the main-hand item was consumed (using GetTargetedBlock as the air-use
+-- fallback for the real targeted block); if it was not consumed, the offhand
+-- shield raises. No cross-event batching is needed.
 ---@param Player cPlayer
 ---@param BlockX number
 ---@param BlockY number
@@ -401,6 +452,16 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
     local ItemOffhand = Player:GetOffHandEquipedItem()
     LOG("Player " .. Player:GetName() .. " using item".. Item.m_ItemType .. "and" .. ItemOffhand.m_ItemType .. " at block " .. BlockX .. "," .. BlockY .. "," .. BlockZ ..
         " cursor " .. CursorX .. "," .. CursorY .. "," .. CursorZ)
+
+    -- Trace the block the player is currently aiming at (independent of the
+    -- event's reported block coords, which can be (-1,255,-1) for air uses).
+    local TargetType, TargetPos = GetTargetedBlock(Player)
+    if TargetPos then
+        LOG("Player " .. Player:GetName() .. " targeting block " .. TargetType ..
+            " at " .. TargetPos.x .. "," .. TargetPos.y .. "," .. TargetPos.z)
+    else
+        LOG("Player " .. Player:GetName() .. " targeting block AIR (nothing in reach)")
+    end
 
     if Item and IsShield(Item.m_ItemType) then
         -- Main hand is a shield: it always raises (shields are not blacklisted).
@@ -419,46 +480,39 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
     end
 
     local Type = Item.m_ItemType
-    local Consumed, Definitive = EvaluateEvent(Player, Type, BlockX, BlockY, BlockZ)
 
-    if Definitive then
-        if not Consumed then
-            RaiseShield(Player)
-        end
-        return
+    -- Resolve the block type the player is actually aiming at. For normal
+    -- events this is World:GetBlock at the reported coords; for air-use events
+    -- (coords == -1,255,-1) we reuse the GetTargetedBlock trace above. This
+    -- fetches the block type exactly once per event.
+    local IsAirUse = (BlockX == -1 and BlockY == 255 and BlockZ == -1)
+    local BlockType
+    if IsAirUse then
+        BlockType = TargetType  -- from GetTargetedBlock above (E_BLOCK_AIR if none)
+    else
+        BlockType = Player:GetWorld():GetBlock(Vector3i(BlockX, BlockY, BlockZ))
     end
 
-    -- Conditional, non-definitive event: batch it for the next tick.
-    local WorldAge = Player:GetWorld():GetWorldAge()
+    local Consumed, Definitive = EvaluateEvent(Player, Type, BlockType)
 
-    if not Player.ShieldBatch or Player.ShieldBatchTick ~= WorldAge then
-        Player.ShieldBatch = {}
-        Player.ShieldBatchTick = WorldAge
-        Player.ShieldBatchItemType = Type
+    -- With GetTargetedBlock as the air-use fallback, every event is now
+    -- definitive: the consumed/not-consumed decision is made per-event from
+    -- the real targeted block, so no cross-event batching is needed.
+    if not Consumed then
+        RaiseShield(Player)
     end
-    table.insert(Player.ShieldBatch, {
-        Consumed = Consumed,
-        Definitive = Definitive,
-        ItemType = Type,
-        BlockX = BlockX,
-        BlockY = BlockY,
-        BlockZ = BlockZ,
-        CursorX = CursorX,
-        CursorY = CursorY,
-        CursorZ = CursorZ,
-        WorldAge = WorldAge,
-    })
-    LOG("Player " .. Player:GetName() .. " batched event #" .. #Player.ShieldBatch ..
-        " at worldage " .. WorldAge ..
-        " type " .. Type ..
+    LOG("Player " .. Player:GetName() .. " using item " .. Type ..
         " consumed=" .. tostring(Consumed) ..
         " definitive=" .. tostring(Definitive) ..
-        " block " .. BlockX .. "," .. BlockY .. "," .. BlockZ ..
-        " cursor " .. CursorX .. "," .. CursorY .. "," .. CursorZ)
+        " blockType=" .. BlockType)
 end
 
--- HOOK_WORLD_TICK: process any pending shield batch from the previous tick. If the
--- main-hand item was not consumed across all batched events, raise the shield.
+-- HOOK_WORLD_TICK: apply deferred shield durability loss (recorded by
+-- HOOK_TAKE_DAMAGE). Cuberite does not implement shield durability natively,
+-- so we use a probability-based break: chance = loss / 336, reduced by
+-- Unbreaking. (The former per-tick batch evaluation was removed: each
+-- USING_ITEM event is now resolved immediately in CheckUseShieldOnUsingItem
+-- via GetTargetedBlock, so there is nothing to defer.)
 ---@param World cWorld
 ---@param TimeDelta number  milliseconds since the last tick
 ---@param LastTickDurationMSec number
@@ -466,36 +520,6 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
     World:ForEachPlayer(
         ---@param Player cPlayer
         function(Player)
-            -- Process pending shield batch from the previous tick.
-            local Batch = Player.ShieldBatch
-            if Batch and #Batch > 0 then
-                local WorldAge = Player:GetWorld():GetWorldAge()
-                    local Name = Player:GetName()
-                    LOG("Player " .. Name .. " evaluating batch of " .. #Batch ..
-                        " event(s) from worldage " .. Player.ShieldBatchTick ..
-                        " (now " .. WorldAge .. ")")
-                    for i, Ev in ipairs(Batch) do
-                        LOG("  event #" .. i ..
-                            " type " .. Ev.ItemType ..
-                            " consumed=" .. tostring(Ev.Consumed) ..
-                            " definitive=" .. tostring(Ev.Definitive) ..
-                            " block " .. Ev.BlockX .. "," .. Ev.BlockY .. "," .. Ev.BlockZ ..
-                            " cursor " .. Ev.CursorX .. "," .. Ev.CursorY .. "," .. Ev.CursorZ ..
-                            " worldage " .. Ev.WorldAge)
-                    end
-
-                    local Consumed = EvaluateBatch(Player)
-                    local CurrentType = Player:GetEquippedItem().m_ItemType
-                    LOG("Player " .. Name .. " batch result: consumed=" .. tostring(Consumed) ..
-                        " batchItemType=" .. Player.ShieldBatchItemType ..
-                        " currentItemType=" .. CurrentType)
-
-                    if not Consumed then
-                        RaiseShield(Player)
-                    end
-                Player.ShieldBatch = nil
-            end
-
             -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
             -- Cuberite does not implement shield durability natively, so we use a
             -- probability-based break: chance = loss / 336, reduced by Unbreaking.
@@ -561,11 +585,32 @@ function CheckUseShieldOnTossingItem(Player)
     end
 end
 
--- Reject offhand interactions the server would silently drop. Cuberite forces
--- a_UsedMainHand = true in HandleRightClick, so an offhand right-click on a
--- block is processed as the (empty) main hand and the server does nothing.
--- Returning true cancels the packet so the client does not play an animation
--- the server ignores (e.g. raising an offhand shield that never raises).
+-- HOOK_PLAYER_RIGHT_CLICK: fires at the very start of both HandleRightClick
+-- (right-click a block, BlockFace >= 0) and HandleUseItem (right-click air,
+-- BlockFace == BLOCK_FACE_NONE), BEFORE Cuberite's food/item-use dispatch.
+--
+-- This is the ONLY hook that fires for two cases where HOOK_PLAYER_USING_ITEM
+-- never fires, but the client still plays a right-click animation and would
+-- raise an offhand shield:
+--   (1) Empty main hand -- nothing to use, server does nothing, but the
+--       client swings the arm.
+--   (2) Creative mode holding normal food -- Cuberite's HandleUseItem blocks
+--       food use in creative (IsFood() && IsGameModeCreative() -> return)
+--       before StartEating / HOOK_PLAYER_USING_ITEM, so the server does
+--       nothing, but the client (which doesn't know about the server-side
+--       block) plays no eat animation and treats it as an empty right-click.
+-- In both cases the right-click is NOT consumed by any item, so the offhand
+-- shield SHOULD raise. We do this here.
+--
+-- We only handle the right-click-air case (BlockFace == BLOCK_FACE_NONE).
+-- Right-clicking a block may be consumed by the block (chest, lever, etc.),
+-- which is a real use of the right-click and should NOT raise the shield;
+-- HOOK_PLAYER_RIGHT_CLICK fires before we can tell whether the block is
+-- usable, so we conservatively skip it.
+--
+-- The pre-existing offhand-cancel logic (return true when the main hand is
+-- empty and the offhand holds an item) is kept: it cancels the packet so the
+-- client does not play an offhand animation the server would silently drop.
 ---@param Player cPlayer
 ---@param BlockX number
 ---@param BlockY number
@@ -577,12 +622,35 @@ end
 ---@return boolean|nil  true to cancel the right-click, nil/false otherwise
 function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
     local ItemOffhand = Player:GetOffHandEquipedItem()
+    local OffhandHasShield = ItemOffhand and IsShield(ItemOffhand.m_ItemType)
+
+    -- Only the right-click-air case (HandleUseItem) needs shield raising.
+    -- HandleUseItem passes BLOCK_FACE_NONE and the sentinel block coords.
+    if BlockFace == BLOCK_FACE_NONE then
+        local Item = Player:GetEquippedItem()
+        local MainEmpty = (not Item) or Item:IsEmpty()
+        local MainIsCreativeFood = Item and FoodItems[Item.m_ItemType] and Player:IsGameModeCreative()
+
+        if OffhandHasShield and (MainEmpty or MainIsCreativeFood) then
+            -- Right-click not consumed by any item: raise the offhand shield.
+            RaiseShield(Player)
+            LOG("Player " .. Player:GetName() .. " raised shield via right-click (main "
+                .. (MainEmpty and "empty" or "creative food") .. ")")
+        end
+    end
+
+    -- Reject offhand interactions the server would silently drop. Cuberite
+    -- forces a_UsedMainHand = true in HandleRightClick, so an offhand
+    -- right-click on a block is processed as the (empty) main hand and the
+    -- server does nothing. Returning true cancels the packet so the client
+    -- does not play an animation the server ignores.
     if ItemOffhand and not ItemOffhand:IsEmpty() then
         local Item = Player:GetEquippedItem()
-        -- Only block when the main hand is empty: that is the case where vanilla
-        -- would defer to the offhand but Cuberite silently drops it. If the main
-        -- hand holds a placeable/usable item the server already handles it via
-        -- the main hand, so the offhand click is a harmless no-op.
+        -- Only block when the main hand is empty: that is the case where
+        -- vanilla would defer to the offhand but Cuberite silently drops it.
+        -- If the main hand holds a placeable/usable item the server already
+        -- handles it via the main hand, so the offhand click is a harmless
+        -- no-op.
         if Item and Item:IsEmpty() then
             return true
         end

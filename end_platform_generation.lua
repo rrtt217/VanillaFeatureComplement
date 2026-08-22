@@ -1,13 +1,15 @@
 ---@param Entity cEntity
 ---@param World cWorld
 function GenerateEndPlatformOnEntityChangingWorld(Entity, World)
+    -- Only the End world's spawn / platform is managed here; never touch
+    -- other worlds' (e.g. nether / overworld) spawn coordinates.
+    if World:GetDimension() ~= dimEnd then
+        return
+    end
     local SpawnPos = World:GetSpawnPos()
     local hasBeenGenerated = SpawnPos:EqualsEps(Vector3i(100,50,0),0.001)
     if not hasBeenGenerated then
         World:SetSpawn(100,50,0)
-    end
-    if World:GetDimension() ~= dimEnd then
-        return
     end
     World:ChunkStay(
     {{6,0},{6,-1}},nil,
@@ -27,7 +29,7 @@ function GenerateEndPlatformOnEntityChangingWorld(Entity, World)
             for z = -2, 2 do
                 if World:GetBlock(Vector3i(x,48,z)) ~= E_BLOCK_OBSIDIAN then
                     if hasBeenGenerated then
-                        World:DropBlockAsPickups(Vector3i(x,y,48))
+                        World:DropBlockAsPickups(Vector3i(x,48,z))
                     end
                     World:SetBlock(Vector3i(x,48,z),E_BLOCK_OBSIDIAN,0)
                 end

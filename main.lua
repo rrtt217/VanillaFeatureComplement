@@ -2,12 +2,13 @@ PLUGIN = nil
 
 function Initialize(Plugin)
 	Plugin:SetName("VanillaFeatureComplement")
-	Plugin:SetVersion(3)
+	Plugin:SetVersion(4)
 
     -- Load Config
     local path = Plugin:GetLocalFolder() .. "/settings.ini"
     Config = cIniFile()
     _G.Config = Config
+    Config:ReadFile(path)  -- Load existing settings.ini so user feature toggles are honored
 	-- Hooks
     if Config:GetValueSetB("Features","EnableMapZoomout",true) then
         LOG("HOOK_CRAFTING_NO_RECIPE has been added to EnableMapZoomout!")
@@ -54,7 +55,5 @@ function Initialize(Plugin)
 end
 
 function OnDisable()
-    local path = PLUGIN:GetLocalFolder() .. "/settings.ini"
-    Config:WriteFile(path)
 	LOG("Shutting down...")
 end

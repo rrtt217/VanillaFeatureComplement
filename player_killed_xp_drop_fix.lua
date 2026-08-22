@@ -57,7 +57,17 @@ function OnKillingDropXpAndOffhand(Victim, Killer, TDI)
     if XpReward > 0 then
         -- SpawnSplitExperienceOrbs splits the total into the standard
         -- 1/3/7/17/37/73/149/307/617/1237/2477 orb values and scatters them.
-        World:SpawnSplitExperienceOrbs(Pos, XpReward)
+        -- NOTE: the spawn must be deferred by one tick. Entities created directly
+        -- inside HOOK_KILLING (i.e. while cEntity::KilledBy() is still running)
+        -- are wiped before the next world tick in this Cuberite build, so the
+        -- orbs would never appear. QueueTask runs the lambda on the world tick
+        -- right after the death flow has finished.
+        World:QueueTask(
+            ---@param DeathWorld cWorld
+            function (DeathWorld)
+                DeathWorld:SpawnSplitExperienceOrbs(Pos, XpReward)
+            end
+        )
     end
 
     -- 2) Off-hand (shield) slot: Cuberite's cInventory::CopyToItems() skips the
@@ -68,7 +78,7 @@ function OnKillingDropXpAndOffhand(Victim, Killer, TDI)
         local Drops = cItems()
         Drops:Add(OffhandItem)
         -- a_IsPlayerCreated = true so the pickup behaves like a player toss.
-        World:SpawnItemPickups(Drops, Pos, 10, true)
+        World:SpawnItemPickups(Drops, Pos.x, Pos.y, Pos.z, 10, true)
         Player:GetInventory():SetShieldSlot(cItem())
     end
 

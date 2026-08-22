@@ -41,7 +41,7 @@ function MapCloningOnCraftingNoRecipe(Player, Grid, Recipe)
     -- excess items in grid
     for x = 0, (width - 1) do
         for y = 0, (height - 1) do
-            if (x ~= map_pos.x or y ~= map_pos.y ) and (x ~= empty_map_pos.x and y ~= empty_map_pos.y) and not Grid:GetItem(x,y):IsEmpty() then
+            if (x ~= map_pos.x or y ~= map_pos.y) and (x ~= empty_map_pos.x or y ~= empty_map_pos.y) and not Grid:GetItem(x,y):IsEmpty() then
                 return false
             end
         end
@@ -49,4 +49,7 @@ function MapCloningOnCraftingNoRecipe(Player, Grid, Recipe)
     Recipe:SetIngredient(map_pos.x,map_pos.y,Grid:GetItem(map_pos.x,map_pos.y):CopyOne())
     Recipe:SetIngredient(empty_map_pos.x,empty_map_pos.y,Grid:GetItem(empty_map_pos.x,empty_map_pos.y):CopyOne())
     Recipe:SetResult(Grid:GetItem(map_pos.x,map_pos.y):CopyOne():AddCount(1))
+    -- Return true so Cuberite applies the recipe we just filled (see OnCraftingNoRecipe
+    -- docs: returning false/nil means "no recipe will be used").
+    return true
 end

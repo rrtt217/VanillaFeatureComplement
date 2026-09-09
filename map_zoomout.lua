@@ -39,7 +39,7 @@ function MapZoomoutOnCraftingNoRecipe(Player, Grid, Recipe)
     local loretable = result.m_LoreTable
     table.insert(loretable,"This map is waiting to be zoomed out by a plugin.")
     result.m_LoreTable = loretable
-    _G.CheckZoomOut = true
+    GetPlayerState(Player).CheckZoomOut = true
     Recipe:SetResult(result)
     return true
 end
@@ -63,39 +63,41 @@ function ZoomOutMap(Map)
 end
 
 function CheckForZoomOutMapOnTick(World, TimeDelta, LastTickDurationMSec)
-    if CheckZoomOut then
-        World:ForEachPlayer(
-            ---@param Player cPlayer
-            function (Player)
-                local inventory = Player:GetInventory()
-                for i = cInventory.invInventoryOffset, cInventory.invShieldOffset do
-                    local item = cItem(inventory:GetSlot(i))
-                    if item.m_ItemType == E_ITEM_MAP and item.m_LoreTable then
-                        local loretable = item.m_LoreTable
-                        local match = false
-                        for j = #loretable, 1 ,-1 do
-                            if loretable[j] == "This map is waiting to be zoomed out by a plugin." then
-                                -- Reference: https://github.com/cuberite/cuberite/blob/master/src/Items/ItemEmptyMap.h#L51
-                                -- the damage value of the map item is NewMap->GetID() & 0x7fff. In short range 0-32767, it equals to MapID.
-                                -- Now setting up callback to zoom out the map.
-                                cRoot:Get():ForEachWorld(
-                                    ---@param World cWorld
-                                    function (World)
-                                        World:GetMapManager():DoWithMap(item.m_ItemDamage,ZoomOutMap)
-                                end)
-                                match = true
-                                -- removes the lore.
-                                table.remove(loretable,j)
-                            end
+    World:ForEachPlayer(
+        ---@param Player cPlayer
+        function (Player)
+            local State = GetPlayerState(Player)
+            if not State.CheckZoomOut then
+                return
+            end
+            local inventory = Player:GetInventory()
+            for i = cInventory.invInventoryOffset, cInventory.invShieldOffset do
+                local item = cItem(inventory:GetSlot(i))
+                if item.m_ItemType == E_ITEM_MAP and item.m_LoreTable then
+                    local loretable = item.m_LoreTable
+                    local match = false
+                    for j = #loretable, 1 ,-1 do
+                        if loretable[j] == "This map is waiting to be zoomed out by a plugin." then
+                            -- Reference: https://github.com/cuberite/cuberite/blob/master/src/Items/ItemEmptyMap.h#L51
+                            -- the damage value of the map item is NewMap->GetID() & 0x7fff. In short range 0-32767, it equals to MapID.
+                            -- Now setting up callback to zoom out the map.
+                            cRoot:Get():ForEachWorld(
+                                ---@param World cWorld
+                                function (World)
+                                    World:GetMapManager():DoWithMap(item.m_ItemDamage,ZoomOutMap)
+                            end)
+                            match = true
+                            -- removes the lore.
+                            table.remove(loretable,j)
                         end
-                        if match then
-                            item.m_LoreTable = loretable
-                            inventory:SetSlot(i,item)
-                            CheckZoomOut = false
-                        end
+                    end
+                    if match then
+                        item.m_LoreTable = loretable
+                        inventory:SetSlot(i,item)
+                        State.CheckZoomOut = false
                     end
                 end
             end
-        )
-    end
+        end
+    )
 end

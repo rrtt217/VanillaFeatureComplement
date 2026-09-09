@@ -418,8 +418,9 @@ end
 ---Raise the shield (only on the false -> true transition).
 ---@param Player cPlayer
 local function RaiseShield(Player)
-    if not Player.IsUsingShield then
-        Player.IsUsingShield = true
+    local State = GetPlayerState(Player)
+    if not State.IsUsingShield then
+        State.IsUsingShield = true
         LOG("Player " .. Player:GetName() .. " used a shield!")
     end
 end
@@ -427,8 +428,9 @@ end
 ---Lower the shield (only on the true -> false transition).
 ---@param Player cPlayer
 local function ReleaseShield(Player)
-    if Player.IsUsingShield then
-        Player.IsUsingShield = false
+    local State = GetPlayerState(Player)
+    if State.IsUsingShield then
+        State.IsUsingShield = false
         LOG("Player " .. Player:GetName() .. " released a shield!")
     end
 end
@@ -523,9 +525,10 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
             -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
             -- Cuberite does not implement shield durability natively, so we use a
             -- probability-based break: chance = loss / 336, reduced by Unbreaking.
-            local Loss = Player.PendingShieldDurabilityLoss
+            local State = GetPlayerState(Player)
+            local Loss = State.PendingShieldDurabilityLoss
             if Loss and Loss > 0 then
-                Player.PendingShieldDurabilityLoss = 0
+                State.PendingShieldDurabilityLoss = 0
                 local ShieldItem, SlotNum
                 local Main = Player:GetEquippedItem()
                 if Main and IsShield(Main.m_ItemType) then
@@ -739,6 +742,7 @@ function CheckUseShieldOnTakeDamage(Receiver, TDI)
         return false
     end
     local Player = Receiver
+    local State = GetPlayerState(Player)
 
     -- Log the damage event for debugging.
     local AttackerPos = "nil"
@@ -749,10 +753,10 @@ function CheckUseShieldOnTakeDamage(Receiver, TDI)
         .. " raw=" .. tostring(TDI.RawDamage)
         .. " final=" .. tostring(TDI.FinalDamage)
         .. " attackerPos=" .. AttackerPos
-        .. " shieldRaised=" .. tostring(Player.IsUsingShield))
+        .. " shieldRaised=" .. tostring(State.IsUsingShield))
 
     -- The shield must be raised (IsUsingShield flag set by USING_ITEM).
-    if not Player.IsUsingShield then
+    if not State.IsUsingShield then
         return false
     end
 
@@ -771,7 +775,7 @@ function CheckUseShieldOnTakeDamage(Receiver, TDI)
     -- knockback, no hurt animation).
     local BlockedDamage = TDI.FinalDamage
     if BlockedDamage >= 3 then
-        Player.PendingShieldDurabilityLoss = (Player.PendingShieldDurabilityLoss or 0)
+        State.PendingShieldDurabilityLoss = (State.PendingShieldDurabilityLoss or 0)
             + math.floor(BlockedDamage) + 1
     end
 
@@ -789,7 +793,7 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
     end
     local Player = Entity
 
-    if not Player.IsUsingShield then
+    if not GetPlayerState(Player).IsUsingShield then
         return false
     end
 

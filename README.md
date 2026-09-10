@@ -2,14 +2,18 @@
 A Cuberite Plugin that adds some Vanilla feature that is missing in Cuberite.
 Currently includes:
 - Map zoomout and clone on crafting table
-    - Zooming out map doesn't create a new map number; instead overwriting the original one
+    - Zooming out keeps the picture the map already has (copied at half resolution, centred) instead of wiping it
+    - Limitation: the zoomed map reuses the original map number, so every copy of that map zooms together. Vanilla hands out a new map id, which needs cMapManager::CreateMap -- not exposed to Lua by upstream; the plugin uses it automatically on a server that binds it
 - Elytra powered flight by firework
     - random time if no firework star; no damage on firework star explosion
 - Shield support
     - Raises main- or offhand shield when right-click does not consume the main hand item
     - Blocks melee, ranged, and explosion damage from the front
-    - Deflects projectiles and applies simulated shield durability loss
-    - Limitation: offhand shield raising uses heuristics, so rare interaction patterns may still mis-detect shield use; durability is emulated because Cuberite has no native shield durability support
+    - Deflects projectiles (Cuberite reports no damage for those, so they do not wear the shield)
+    - Plays the vanilla shield block sound on every block
+    - Wears the shield down like vanilla: hits of 3+ damage cost 1 + floor(damage) durability, reduced by Unbreaking, and nothing is worn in creative
+    - Durability is stored in the shield's lore (`Durability: <left>/336`), because Cuberite has no native shield durability support
+    - Limitation: offhand shield raising uses heuristics, so rare interaction patterns may still mis-detect shield use
 - End platform generation
 - Sleep clears weather
 - Player death XP and off-hand drop fix

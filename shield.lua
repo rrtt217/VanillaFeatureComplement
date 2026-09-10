@@ -415,20 +415,27 @@ local function IsShield(ItemType)
     return ItemType == E_ITEM_SHIELD
 end
 
----Find the shield the player is currently holding (main or off hand).
----Returns the cItem, or nil if no shield is equipped.
+---Find the shield the player is currently holding (main or off hand), together
+---with the slot it came from, so a modified item can be written back.
+---
+---The item is returned as an owned COPY: assigning a property such as m_LoreTable
+---on the userdata handed out by GetEquippedItem()/GetOffHandEquipedItem() fails
+---with "The 'self' parameter is not of the expected type, instance of cItem", so
+---the lore can only be edited on a cItem the plugin owns (the map code wraps slots
+---in cItem() for the same reason).
 ---@param Player cPlayer
 ---@return cItem|nil
+---@return boolean IsOffhand  true when the shield sits in the off hand slot
 local function GetHeldShield(Player)
     local Main = Player:GetEquippedItem()
     if Main and IsShield(Main.m_ItemType) then
-        return Main
+        return cItem(Main), false
     end
     local Off = Player:GetOffHandEquipedItem()
     if Off and IsShield(Off.m_ItemType) then
-        return Off
+        return cItem(Off), true
     end
-    return nil
+    return nil, false
 end
 
 ---Raise the shield (only on the false -> true transition).
@@ -449,6 +456,123 @@ local function ReleaseShield(Player)
         State.IsUsingShield = false
         DebugLog("Player " .. Player:GetName() .. " released a shield!")
     end
+end
+
+---Sound event played when a shield blocks an attack. Cuberite sends the name to
+---the client as-is (protocol "Named Sound Effect"), which resolves it against its
+---own sound registry, so the vanilla 1.9+ name is used.
+local SHIELD_BLOCK_SOUND = "item.shield.block"
+
+---Play the shield block sound at the player's position.
+---
+---Uses the vector overload: both are bound and take volume before pitch, but the
+---X / Y / Z form is deprecated and logs a deprecation warning (with a full stack
+---trace) on every single call.
+---@param Player cPlayer
+local function PlayShieldBlockSound(Player)
+    Player:GetWorld():BroadcastSoundEffect(
+        SHIELD_BLOCK_SOUND,
+        Player:GetPosition(),
+        1.0,  -- volume
+        1.0   -- pitch
+    )
+end
+
+---Maximum durability of a shield (the vanilla value).
+local SHIELD_DURABILITY_MAX = 336
+
+---Prefix of the lore line that stores a shield's remaining durability. The line is
+---read back whenever the shield blocks again, so the format must stay stable:
+---    "Durability: <remaining>/336"
+local SHIELD_DURABILITY_PREFIX = "Durability: "
+
+---Read the durability stored in a shield's lore.
+---@param Item cItem
+---@return number|nil  nil for a shield without a counter yet (= pristine)
+local function GetShieldDurability(Item)
+    local Lore = Item.m_LoreTable
+    if not Lore then
+        return nil
+    end
+    for _, Line in ipairs(Lore) do
+        if Line:sub(1, #SHIELD_DURABILITY_PREFIX) == SHIELD_DURABILITY_PREFIX then
+            return tonumber(Line:match("(%d+)"))
+        end
+    end
+    return nil
+end
+
+---Write the remaining durability into a shield's lore, leaving any other lore line
+---(custom names, player-written lore) untouched.
+---@param Item cItem
+---@param Remaining number
+local function SetShieldDurability(Item, Remaining)
+    local Lore = Item.m_LoreTable or {}
+    local Line = SHIELD_DURABILITY_PREFIX .. Remaining .. "/" .. SHIELD_DURABILITY_MAX
+    for i, Existing in ipairs(Lore) do
+        if Existing:sub(1, #SHIELD_DURABILITY_PREFIX) == SHIELD_DURABILITY_PREFIX then
+            Lore[i] = Line
+            Item.m_LoreTable = Lore
+            return
+        end
+    end
+    table.insert(Lore, Line)
+    Item.m_LoreTable = Lore
+end
+
+---Store a (possibly modified) shield back into the slot it was read from.
+---@param Player cPlayer
+---@param Item cItem  cItem() clears the slot
+---@param IsOffhand boolean
+local function StoreShield(Player, Item, IsOffhand)
+    local Inventory = Player:GetInventory()
+    if IsOffhand then
+        Inventory:SetShieldSlot(Item)
+    else
+        Inventory:SetEquippedItem(Item)
+    end
+end
+
+---Wear the raised shield down by the given amount of durability.
+---
+---Cuberite has no native shield durability, so the remaining durability is stored
+---in the item's lore. The amount follows vanilla's damageShield(): only hits of 3+
+---damage wear a shield, for 1 + floor(damage) points. Unbreaking negates each point
+---with a chance of 1 / (level + 1) (like ItemStack#attemptDamageItem), creative
+---players do not wear items, and the shield is removed once the counter runs out.
+---@param Player cPlayer
+---@param Loss number  durability points vanilla would subtract
+local function WearShield(Player, Loss)
+    if Player:IsGameModeCreative() then
+        return
+    end
+    local Shield, IsOffhand = GetHeldShield(Player)
+    if not Shield then
+        return
+    end
+
+    local Unbreaking = Shield.m_Enchantments:GetLevel(cEnchantments.enchUnbreaking)
+    local Applied = 0
+    for _ = 1, Loss do
+        -- Each point is skipped with a chance of 1 / (level + 1).
+        if (Unbreaking <= 0) or (math.random() * (Unbreaking + 1) >= 1) then
+            Applied = Applied + 1
+        end
+    end
+    if Applied <= 0 then
+        return
+    end
+
+    local Remaining = (GetShieldDurability(Shield) or SHIELD_DURABILITY_MAX) - Applied
+    if Remaining > 0 then
+        SetShieldDurability(Shield, Remaining)
+        StoreShield(Player, Shield, IsOffhand)
+        return
+    end
+
+    LOG("Player " .. Player:GetName() .. " shield broke!")
+    ReleaseShield(Player)
+    StoreShield(Player, cItem(), IsOffhand)
 end
 
 -- HOOK_PLAYER_USING_ITEM: the "shield raised" signal, fired on the tick the
@@ -525,15 +649,10 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
         " blockType=" .. BlockType)
 end
 
--- HOOK_WORLD_TICK: two jobs:
---   1) drop a raised-shield state whose shield has left both hands (see the
---      safety net in the handler below);
---   2) apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
--- Cuberite does not implement shield durability natively, so we use a
--- probability-based break: chance = loss / 336, reduced by Unbreaking. (The
--- former per-tick batch evaluation was removed: each USING_ITEM event is now
--- resolved immediately in CheckUseShieldOnUsingItem via GetTargetedBlock, so
--- there is nothing to defer.)
+-- HOOK_WORLD_TICK: drop a raised-shield state whose shield has left both hands
+-- (see the safety net in the handler below). Shield durability is applied by
+-- CheckUseShieldOnTakeDamage itself, where it is stored in the shield's lore, so
+-- there is nothing left to defer to a tick.
 ---@param World cWorld
 ---@param TimeDelta number  milliseconds since the last tick
 ---@param LastTickDurationMSec number
@@ -558,40 +677,6 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
                 ReleaseShield(Player)
             end
 
-            -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
-            -- Cuberite does not implement shield durability natively, so we use a
-            -- probability-based break: chance = loss / 336, reduced by Unbreaking.
-            local Loss = State.PendingShieldDurabilityLoss
-            if Loss and Loss > 0 then
-                State.PendingShieldDurabilityLoss = 0
-                local ShieldItem, SlotNum
-                local Main = Player:GetEquippedItem()
-                if Main and IsShield(Main.m_ItemType) then
-                    ShieldItem = Main
-                    SlotNum = nil  -- main hand, use DamageEquippedItem-like removal
-                else
-                    local Off = Player:GetOffHandEquipedItem()
-                    if Off and IsShield(Off.m_ItemType) then
-                        ShieldItem = Off
-                        SlotNum = cInventory.invShieldOffset
-                    end
-                end
-                if ShieldItem then
-                    local UnbreakingLevel = ShieldItem.m_Enchantments:GetLevel(cEnchantments.enchUnbreaking)
-                    local BreakChance = (Loss / 336) * (100 / (UnbreakingLevel + 1)) / 100
-                    DebugLog("Player " .. Player:GetName() .. " shield break chance: " .. tostring(BreakChance)
-                        .. " (loss=" .. Loss .. " unbreaking=" .. UnbreakingLevel .. ")")
-                    if math.random() < BreakChance then
-                        LOG("Player " .. Player:GetName() .. " shield broke!")
-                        ReleaseShield(Player)
-                        if SlotNum then
-                            Player:GetInventory():SetShieldSlot(cItem())
-                        else
-                            Player:GetInventory():RemoveOneEquippedItem()
-                        end
-                    end
-                end
-            end
         end
     )
 end
@@ -646,10 +731,6 @@ end
 -- which is a real use of the right-click and should NOT raise the shield;
 -- HOOK_PLAYER_RIGHT_CLICK fires before we can tell whether the block is
 -- usable, so we conservatively skip it.
---
--- The pre-existing offhand-cancel logic (return true when the main hand is
--- empty and the offhand holds an item) is kept: it cancels the packet so the
--- client does not play an offhand animation the server would silently drop.
 ---@param Player cPlayer
 ---@param BlockX number
 ---@param BlockY number
@@ -658,7 +739,7 @@ end
 ---@param CursorX number
 ---@param CursorY number
 ---@param CursorZ number
----@return boolean|nil  true to cancel the right-click, nil/false otherwise
+---@return nil  this handler never cancels the right-click
 function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
     local ItemOffhand = Player:GetOffHandEquipedItem()
     local OffhandHasShield = ItemOffhand and IsShield(ItemOffhand.m_ItemType)
@@ -675,23 +756,6 @@ function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, C
             RaiseShield(Player)
             DebugLog("Player " .. Player:GetName() .. " raised shield via right-click (main "
                 .. (MainEmpty and "empty" or "creative food") .. ")")
-        end
-    end
-
-    -- Reject offhand interactions the server would silently drop. Cuberite
-    -- forces a_UsedMainHand = true in HandleRightClick, so an offhand
-    -- right-click on a block is processed as the (empty) main hand and the
-    -- server does nothing. Returning true cancels the packet so the client
-    -- does not play an animation the server ignores.
-    if ItemOffhand and not ItemOffhand:IsEmpty() then
-        local Item = Player:GetEquippedItem()
-        -- Only block when the main hand is empty: that is the case where
-        -- vanilla would defer to the offhand but Cuberite silently drops it.
-        -- If the main hand holds a placeable/usable item the server already
-        -- handles it via the main hand, so the offhand click is a harmless
-        -- no-op.
-        if Item and Item:IsEmpty() then
-            return true
         end
     end
 end
@@ -789,14 +853,16 @@ function CheckUseShieldOnTakeDamage(Receiver, TDI)
         return false
     end
 
-    -- Record the blocked amount so HOOK_WORLD_TICK can apply shield durability
-    -- loss later. Return true to cancel the damage entirely (no damage, no
-    -- knockback, no hurt animation).
+    -- Wear the shield down and tell the client it blocked. Return true to cancel
+    -- the damage entirely (no damage, no knockback, no hurt animation).
     local BlockedDamage = TDI.FinalDamage
     if BlockedDamage >= 3 then
-        State.PendingShieldDurabilityLoss = (State.PendingShieldDurabilityLoss or 0)
-            + math.floor(BlockedDamage) + 1
+        -- Vanilla only wears a shield on hits of 3+ damage.
+        WearShield(Player, math.floor(BlockedDamage) + 1)
     end
+    PlayShieldBlockSound(Player)
+    DebugLog("Player " .. Player:GetName() .. " blocked " .. tostring(BlockedDamage) .. " damage with a shield"
+        .. ((BlockedDamage >= 3) and " (shield worn)" or " (hit too weak to wear it)"))
 
     return true
 end
@@ -821,6 +887,10 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
     if not IsAttackFromFront(Player, ProjectileEntity) then
         return false
     end
+
+    -- A deflected projectile is a shield block as well. Cuberite reports no damage
+    -- for it, so the shield is not worn down here.
+    PlayShieldBlockSound(Player)
 
     if ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkArrow and ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkGhastFireball then
         ProjectileEntity:Destroy()

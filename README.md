@@ -15,3 +15,15 @@ Currently includes:
 - Player death XP and off-hand drop fix
     - Players drop experience orbs worth min(7 × level, 100) on death, regardless of cause
     - The off-hand (shield) slot item is dropped on death (Cuberite clears it without dropping)
+
+## Settings
+
+`settings.ini` has one toggle per feature under `[Features]`. Verbose per-event
+diagnostics (item / shield / damage traces, elytra fallback notices) are off by
+default, because they fire on every right-click and every damage event; enable
+them only while debugging:
+
+```ini
+[Debug]
+EnableDebugLog=1
+```

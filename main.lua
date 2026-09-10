@@ -1,5 +1,20 @@
 PLUGIN = nil
 
+-- Verbose logging switch, set from settings.ini [Debug] EnableDebugLog in
+-- Initialize(). Off by default: the per-event traces (every item use, every
+-- damage event, every shield raise/release) are noise on a live server.
+DebugLogging = false
+
+---Log a diagnostic message, but only when debug logging is enabled.
+---Use this for per-event traces; use LOG() directly for one-off lifecycle
+---messages (plugin load / unload) and for rare, actionable anomalies.
+---@param Message string
+function DebugLog(Message)
+	if DebugLogging then
+		LOG(Message)
+	end
+end
+
 -- Per-player plugin state storage.
 --
 -- We deliberately do NOT store per-player state as dynamic fields on the
@@ -69,6 +84,9 @@ function Initialize(Plugin)
     Config = cIniFile()
     _G.Config = Config
     Config:ReadFile(path)  -- Load existing settings.ini so user feature toggles are honored
+
+    -- Verbose per-event diagnostics are opt-in (settings.ini [Debug] EnableDebugLog).
+    DebugLogging = Config:GetValueSetB("Debug", "EnableDebugLog", false)
 	-- Hooks
     if Config:GetValueSetB("Features","EnableMapZoomout",true) then
         LOG("HOOK_CRAFTING_NO_RECIPE has been added to EnableMapZoomout!")

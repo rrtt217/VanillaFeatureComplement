@@ -15,7 +15,7 @@ function ClearWeatherOnPlayerSleep(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
         Player:GetWorld():QueueTask(
             ---@param World cWorld
             function (World)
-                LOG("Time:" .. tostring(World:GetTimeOfDay()))
+                DebugLog("Time:" .. tostring(World:GetTimeOfDay()))
                 -- Behavior after Vanilla 21w44a. Before that the second condition doesn't exist.
                 -- FIXME:There's a small possiblilty that the task is not executed in World Time 0, or player clicked the bed exactly in tick 0 when we shouldn't clear the weather.
                 if World:GetTimeOfDay() < 1 and World:GetWeather() ~= wSunny then

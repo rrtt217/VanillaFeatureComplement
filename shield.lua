@@ -415,13 +415,29 @@ local function IsShield(ItemType)
     return ItemType == E_ITEM_SHIELD
 end
 
+---Find the shield the player is currently holding (main or off hand).
+---Returns the cItem, or nil if no shield is equipped.
+---@param Player cPlayer
+---@return cItem|nil
+local function GetHeldShield(Player)
+    local Main = Player:GetEquippedItem()
+    if Main and IsShield(Main.m_ItemType) then
+        return Main
+    end
+    local Off = Player:GetOffHandEquipedItem()
+    if Off and IsShield(Off.m_ItemType) then
+        return Off
+    end
+    return nil
+end
+
 ---Raise the shield (only on the false -> true transition).
 ---@param Player cPlayer
 local function RaiseShield(Player)
     local State = GetPlayerState(Player)
     if not State.IsUsingShield then
         State.IsUsingShield = true
-        LOG("Player " .. Player:GetName() .. " used a shield!")
+        DebugLog("Player " .. Player:GetName() .. " used a shield!")
     end
 end
 
@@ -431,7 +447,7 @@ local function ReleaseShield(Player)
     local State = GetPlayerState(Player)
     if State.IsUsingShield then
         State.IsUsingShield = false
-        LOG("Player " .. Player:GetName() .. " released a shield!")
+        DebugLog("Player " .. Player:GetName() .. " released a shield!")
     end
 end
 
@@ -452,17 +468,17 @@ end
 function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
     local Item = Player:GetEquippedItem()
     local ItemOffhand = Player:GetOffHandEquipedItem()
-    LOG("Player " .. Player:GetName() .. " using item".. Item.m_ItemType .. "and" .. ItemOffhand.m_ItemType .. " at block " .. BlockX .. "," .. BlockY .. "," .. BlockZ ..
+    DebugLog("Player " .. Player:GetName() .. " using item".. Item.m_ItemType .. "and" .. ItemOffhand.m_ItemType .. " at block " .. BlockX .. "," .. BlockY .. "," .. BlockZ ..
         " cursor " .. CursorX .. "," .. CursorY .. "," .. CursorZ)
 
     -- Trace the block the player is currently aiming at (independent of the
     -- event's reported block coords, which can be (-1,255,-1) for air uses).
     local TargetType, TargetPos = GetTargetedBlock(Player)
     if TargetPos then
-        LOG("Player " .. Player:GetName() .. " targeting block " .. TargetType ..
+        DebugLog("Player " .. Player:GetName() .. " targeting block " .. TargetType ..
             " at " .. TargetPos.x .. "," .. TargetPos.y .. "," .. TargetPos.z)
     else
-        LOG("Player " .. Player:GetName() .. " targeting block AIR (nothing in reach)")
+        DebugLog("Player " .. Player:GetName() .. " targeting block AIR (nothing in reach)")
     end
 
     if Item and IsShield(Item.m_ItemType) then
@@ -503,18 +519,21 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
     if not Consumed then
         RaiseShield(Player)
     end
-    LOG("Player " .. Player:GetName() .. " using item " .. Type ..
+    DebugLog("Player " .. Player:GetName() .. " using item " .. Type ..
         " consumed=" .. tostring(Consumed) ..
         " definitive=" .. tostring(Definitive) ..
         " blockType=" .. BlockType)
 end
 
--- HOOK_WORLD_TICK: apply deferred shield durability loss (recorded by
--- HOOK_TAKE_DAMAGE). Cuberite does not implement shield durability natively,
--- so we use a probability-based break: chance = loss / 336, reduced by
--- Unbreaking. (The former per-tick batch evaluation was removed: each
--- USING_ITEM event is now resolved immediately in CheckUseShieldOnUsingItem
--- via GetTargetedBlock, so there is nothing to defer.)
+-- HOOK_WORLD_TICK: two jobs:
+--   1) drop a raised-shield state whose shield has left both hands (see the
+--      safety net in the handler below);
+--   2) apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
+-- Cuberite does not implement shield durability natively, so we use a
+-- probability-based break: chance = loss / 336, reduced by Unbreaking. (The
+-- former per-tick batch evaluation was removed: each USING_ITEM event is now
+-- resolved immediately in CheckUseShieldOnUsingItem via GetTargetedBlock, so
+-- there is nothing to defer.)
 ---@param World cWorld
 ---@param TimeDelta number  milliseconds since the last tick
 ---@param LastTickDurationMSec number
@@ -522,10 +541,26 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
     World:ForEachPlayer(
         ---@param Player cPlayer
         function(Player)
+            local State = GetPlayerState(Player)
+
+            -- Safety net: a raised shield must never outlive the shield itself.
+            -- HOOK_PLAYER_TOSSING_ITEM only fires for the Q-drop and the window
+            -- outside-click, and on the Q path it fires BEFORE TossEquippedItem(),
+            -- so GetEquippedItem() still returns the shield at that moment and the
+            -- TOSS handler cannot tell that the raised shield is being dropped.
+            -- The drop key, closing a window with a dragged item and every other
+            -- way of losing the shield fire no hook at all. Without this check the
+            -- flag stayed true forever and CheckUseShieldOnTakeDamage kept
+            -- negating frontal damage with no shield in hand (observed: 20 -> 20 HP
+            -- after the shield was dropped).
+            if State.IsUsingShield and (GetHeldShield(Player) == nil) then
+                DebugLog("Player " .. Player:GetName() .. " no longer holds a shield; lowering the raised shield state")
+                ReleaseShield(Player)
+            end
+
             -- Apply deferred shield durability loss (recorded by HOOK_TAKE_DAMAGE).
             -- Cuberite does not implement shield durability natively, so we use a
             -- probability-based break: chance = loss / 336, reduced by Unbreaking.
-            local State = GetPlayerState(Player)
             local Loss = State.PendingShieldDurabilityLoss
             if Loss and Loss > 0 then
                 State.PendingShieldDurabilityLoss = 0
@@ -544,7 +579,7 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
                 if ShieldItem then
                     local UnbreakingLevel = ShieldItem.m_Enchantments:GetLevel(cEnchantments.enchUnbreaking)
                     local BreakChance = (Loss / 336) * (100 / (UnbreakingLevel + 1)) / 100
-                    LOG("Player " .. Player:GetName() .. " shield break chance: " .. tostring(BreakChance)
+                    DebugLog("Player " .. Player:GetName() .. " shield break chance: " .. tostring(BreakChance)
                         .. " (loss=" .. Loss .. " unbreaking=" .. UnbreakingLevel .. ")")
                     if math.random() < BreakChance then
                         LOG("Player " .. Player:GetName() .. " shield broke!")
@@ -638,7 +673,7 @@ function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, C
         if OffhandHasShield and (MainEmpty or MainIsCreativeFood) then
             -- Right-click not consumed by any item: raise the offhand shield.
             RaiseShield(Player)
-            LOG("Player " .. Player:GetName() .. " raised shield via right-click (main "
+            DebugLog("Player " .. Player:GetName() .. " raised shield via right-click (main "
                 .. (MainEmpty and "empty" or "creative food") .. ")")
         end
     end
@@ -714,22 +749,6 @@ local function IsAttackFromFront(Player, Attacker, Knockback)
     return (ToAttacker:Dot(Look) > 0)
 end
 
----Find the shield the player is currently holding up (main or off hand).
----Returns the cItem, or nil if no shield is equipped.
----@param Player cPlayer
----@return cItem|nil
-local function GetHeldShield(Player)
-    local Main = Player:GetEquippedItem()
-    if Main and IsShield(Main.m_ItemType) then
-        return Main
-    end
-    local Off = Player:GetOffHandEquipedItem()
-    if Off and IsShield(Off.m_ItemType) then
-        return Off
-    end
-    return nil
-end
-
 -- HOOK_TAKE_DAMAGE: implement shield blocking. When a player with a raised
 -- shield is attacked from the front by a blockable damage type, the damage is
 -- negated, knockback is reduced, and the shield takes durability damage.
@@ -749,7 +768,7 @@ function CheckUseShieldOnTakeDamage(Receiver, TDI)
     if TDI.Attacker then
         AttackerPos = TDI.Attacker:GetPosX() .. "," .. TDI.Attacker:GetPosY() .. "," .. TDI.Attacker:GetPosZ()
     end
-    LOG("Player " .. Player:GetName() .. " took damage: type=" .. tostring(TDI.DamageType)
+    DebugLog("Player " .. Player:GetName() .. " took damage: type=" .. tostring(TDI.DamageType)
         .. " raw=" .. tostring(TDI.RawDamage)
         .. " final=" .. tostring(TDI.FinalDamage)
         .. " attackerPos=" .. AttackerPos

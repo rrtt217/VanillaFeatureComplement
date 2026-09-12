@@ -1,54 +1,64 @@
 -- Enable cloning the map with a craft table.
+--
+-- Vanilla Minecraft implements map cloning as a shapeless recipe: exactly ONE
+-- filled map plus 1..8 empty maps (any arrangement, stacks allowed; the grid
+-- itself bounds the count - a 2x2 grid fits 1, a 3x3 grid fits 8). The result
+-- is one filled map per empty map plus the original, all sharing the source
+-- map's data, so every copy stays in sync as the world is explored.
+--
 ---@param Player cPlayer
 ---@param Grid cCraftingGrid
 ---@param Recipe cCraftingRecipe
 function MapCloningOnCraftingNoRecipe(Player, Grid, Recipe)
-    local Item = cItem()
-    local map_pos = {x = -1,y = -1}
-    local empty_map_pos = {x = -1,y = -1}
-    local width = Grid:GetWidth()
-    local height = Grid:GetHeight()
-    for x = 0, (width - 1) do
-        for y = 0, (height - 1) do
-            Item = Grid:GetItem(x,y)
-            if Item.m_ItemType == E_ITEM_EMPTY_MAP then
-                if x < width - 1 and Grid:GetItem(x+1,y).m_ItemType == E_ITEM_MAP then
-                    map_pos = {x = x + 1,y = y}
-                    empty_map_pos = {x = x,y = y}
-                    break
-                elseif y < height - 1 and Grid:GetItem(x,y+1).m_ItemType == E_ITEM_MAP then
-                    map_pos = {x = x,y = y + 1}
-                    empty_map_pos = {x = x,y = y}
-                    break
+    local Width = Grid:GetWidth()
+    local Height = Grid:GetHeight()
+
+    local MapPos = nil       -- grid position of the single filled map
+    local EmptyCount = 0     -- total number of empty maps (sum of stack counts)
+
+    -- Scan the grid: exactly one filled map, at least one empty map and nothing
+    -- else. Unlike the old code this does not require adjacency, matching the
+    -- vanilla shapeless recipe (place the empty maps anywhere around/next to it).
+    for x = 0, Width - 1 do
+        for y = 0, Height - 1 do
+            local Item = Grid:GetItem(x, y)
+            local ItemType = Item.m_ItemType
+            if ItemType == E_ITEM_EMPTY_MAP then
+                EmptyCount = EmptyCount + Item.m_ItemCount
+            elseif ItemType == E_ITEM_MAP then
+                if (MapPos ~= nil) or (Item.m_ItemCount ~= 1) then
+                    -- More than one filled map (or a stack of them): not cloning.
+                    return false
                 end
-            elseif Item.m_ItemType == E_ITEM_MAP then
-                if x < width - 1 and Grid:GetItem(x+1,y).m_ItemType == E_ITEM_EMPTY_MAP then
-                    empty_map_pos = {x = x + 1,y = y}
-                    map_pos = {x = x,y = y}
-                    break
-                elseif y < height - 1 and Grid:GetItem(x,y+1).m_ItemType == E_ITEM_EMPTY_MAP then
-                    empty_map_pos = {x = x,y = y + 1}
-                    map_pos = {x = x,y = y}
-                    break
-                end
-            end
-        end
-    end
-    -- no match
-    if map_pos.x < 0 then
-        return false
-    end
-    -- excess items in grid
-    for x = 0, (width - 1) do
-        for y = 0, (height - 1) do
-            if (x ~= map_pos.x or y ~= map_pos.y) and (x ~= empty_map_pos.x or y ~= empty_map_pos.y) and not Grid:GetItem(x,y):IsEmpty() then
+                MapPos = { x = x, y = y }
+            elseif not Item:IsEmpty() then
+                -- Anything else means this is not the cloning recipe.
                 return false
             end
         end
     end
-    Recipe:SetIngredient(map_pos.x,map_pos.y,Grid:GetItem(map_pos.x,map_pos.y):CopyOne())
-    Recipe:SetIngredient(empty_map_pos.x,empty_map_pos.y,Grid:GetItem(empty_map_pos.x,empty_map_pos.y):CopyOne())
-    Recipe:SetResult(Grid:GetItem(map_pos.x,map_pos.y):CopyOne():AddCount(1))
+
+    -- Need exactly one filled map and at least one empty map.
+    if (MapPos == nil) or (EmptyCount < 1) then
+        return false
+    end
+
+    -- Fill in the recipe. Ingredients are the map and every empty map; the full
+    -- slot stack is listed so ConsumeIngredients consumes all of it (CopyOne
+    -- would leave stacked empty maps behind).
+    Recipe:SetIngredient(MapPos.x, MapPos.y, Grid:GetItem(MapPos.x, MapPos.y):CopyOne())
+    for x = 0, Width - 1 do
+        for y = 0, Height - 1 do
+            local Item = Grid:GetItem(x, y)
+            if Item.m_ItemType == E_ITEM_EMPTY_MAP then
+                Recipe:SetIngredient(x, y, Item)
+            end
+        end
+    end
+
+    -- Result: one copy per empty map plus the original, all sharing the map data.
+    Recipe:SetResult(Grid:GetItem(MapPos.x, MapPos.y):CopyOne():AddCount(EmptyCount))
+
     -- Return true so Cuberite applies the recipe we just filled (see OnCraftingNoRecipe
     -- docs: returning false/nil means "no recipe will be used").
     return true

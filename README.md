@@ -31,3 +31,17 @@ them only while debugging:
 [Debug]
 EnableDebugLog=1
 ```
+
+## Tests
+
+The shield state machine ships with an offline robustness suite. It mocks the Cuberite API
+and drives every itemtype the engine can put in a hand through the use / release / damage
+hooks, checking both that no handler ever raises a Lua error and that the offhand shield
+raises exactly when the right-click was not consumed by the main-hand item:
+
+```sh
+lua    tests/shield_test.lua      # Lua 5.4
+luajit tests/shield_test.lua      # Lua 5.1 (the version Cuberite embeds)
+```
+
+It exits 0 only when every check passes.

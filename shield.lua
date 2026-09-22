@@ -19,16 +19,21 @@
 -- block, so the consumed/not-consumed decision is reliable per-event and no
 -- cross-event batching is needed.
 
----Items that unconditionally consume the right-click and so never raise the
----shield when held in the main hand.
+---Thrown items that unconditionally consume the right-click and so never raise
+---the shield when held in the main hand.
+---
+---Note that E_ITEM_FIRE_CHARGE is NOT here: the engine routes it through the same
+---cItemLighterHandler as flint and steel (it lights a fire on a block face), it is
+---not thrown. E_ITEM_LINGERING_POTION IS here: cItemPotionHandler throws it just
+---like a splash potion.
 local ProjectileItems =
 {
     [E_ITEM_SNOWBALL] = true,
     [E_ITEM_EGG] = true,
     [E_ITEM_ENDER_PEARL] = true,
     [E_ITEM_EYE_OF_ENDER] = true,
-    [E_ITEM_FIRE_CHARGE] = true,
     [E_ITEM_SPLASH_POTION] = true,
+    [E_ITEM_LINGERING_POTION] = true,
     [E_ITEM_BOTTLE_O_ENCHANTING] = true,
 }
 
@@ -151,6 +156,12 @@ local FoodItems =
     [E_ITEM_MELON_SLICE] = true,
     [E_ITEM_SPIDER_EYE] = true,
     [E_ITEM_COOKIE] = true,
+    -- Added after cross-checking src/Items/ItemHandler.cpp: these three are food
+    -- handlers in the engine (cItemSoupHandler / cItemSimpleFoodHandler /
+    -- cItemFoodSeedsHandler) and were missing from this table.
+    [E_ITEM_MUSHROOM_SOUP] = true,
+    [E_ITEM_GOLDEN_CARROT] = true,
+    [E_ITEM_POTATO] = true,
 }
 
 ---Special food items (golden apple, chorus fruit). Cuberite's HandleUseItem
@@ -389,7 +400,11 @@ local function EvaluateEvent(Player, Type, BlockType)
         end
         return true, true
     end
-    if Type == E_ITEM_FLINT_AND_STEEL then
+    -- Flint-and-steel and fire charge share cItemLighterHandler: both only act on a
+    -- real block face (a_ClickedBlockFace < 0 does nothing), so an air use is never
+    -- consumed. Neither is thrown (that is dispenser behaviour), so unlike the vanilla
+    -- inventory they must NOT be treated as projectiles.
+    if Type == E_ITEM_FLINT_AND_STEEL or Type == E_ITEM_FIRE_CHARGE then
         if IsAir then
             return false, true
         end
@@ -403,6 +418,23 @@ local function EvaluateEvent(Player, Type, BlockType)
             return false, true
         end
         return IsSolidSurface(BlockType), true
+    end
+    if Type == E_ITEM_GLASS_BOTTLE then
+        -- cItemBottleHandler: fills only from a water source the eye ray reaches.
+        -- (The engine traces up to 5 blocks and insists on a source block; the
+        -- trace handed in here is the first non-air block within player reach, so
+        -- this is the closest approximation available to Lua.)
+        if IsAir then
+            return false, true
+        end
+        return (BlockType == E_BLOCK_WATER) or (BlockType == E_BLOCK_STATIONARY_WATER), true
+    end
+    if Type == E_ITEM_END_CRYSTAL then
+        -- cItemEndCrystalHandler: places only on obsidian or bedrock.
+        if IsAir then
+            return false, true
+        end
+        return (BlockType == E_BLOCK_OBSIDIAN) or (BlockType == E_BLOCK_BEDROCK), true
     end
 
     return false, true
@@ -592,8 +624,12 @@ end
 function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
     local Item = Player:GetEquippedItem()
     local ItemOffhand = Player:GetOffHandEquipedItem()
-    DebugLog("Player " .. Player:GetName() .. " using item".. Item.m_ItemType .. "and" .. ItemOffhand.m_ItemType .. " at block " .. BlockX .. "," .. BlockY .. "," .. BlockZ ..
-        " cursor " .. CursorX .. "," .. CursorY .. "," .. CursorZ)
+    -- Both slots can come back nil (no item in hand), so the trace must not assume
+    -- the userdata exists -- a plain nil dereference here aborts the whole hook.
+    DebugLog("Player " .. Player:GetName() .. " using item " .. (Item and Item.m_ItemType or -1)
+        .. " and " .. (ItemOffhand and ItemOffhand.m_ItemType or -1)
+        .. " at block " .. BlockX .. "," .. BlockY .. "," .. BlockZ
+        .. " cursor " .. CursorX .. "," .. CursorY .. "," .. CursorZ)
 
     -- Trace the block the player is currently aiming at (independent of the
     -- event's reported block coords, which can be (-1,255,-1) for air uses).
@@ -749,13 +785,20 @@ function CheckUseShieldOnRightClick(Player, BlockX, BlockY, BlockZ, BlockFace, C
     if BlockFace == BLOCK_FACE_NONE then
         local Item = Player:GetEquippedItem()
         local MainEmpty = (not Item) or Item:IsEmpty()
-        local MainIsCreativeFood = Item and FoodItems[Item.m_ItemType] and Player:IsGameModeCreative()
+        -- Normal food the engine refuses to eat (creative mode OR a satiated player,
+        -- see HandleUseItem): it returns before StartEating, so the right-click is not
+        -- consumed and the client plays no eating animation -- it raises the offhand
+        -- shield exactly like an empty main hand. Golden apple / chorus fruit are NOT
+        -- in FoodItems: the engine exempts them from that guard, so they are eaten and
+        -- the right-click IS consumed.
+        local MainIsUnusableFood = Item and FoodItems[Item.m_ItemType]
+            and (Player:IsGameModeCreative() or Player:IsSatiated())
 
-        if OffhandHasShield and (MainEmpty or MainIsCreativeFood) then
+        if OffhandHasShield and (MainEmpty or MainIsUnusableFood) then
             -- Right-click not consumed by any item: raise the offhand shield.
             RaiseShield(Player)
             DebugLog("Player " .. Player:GetName() .. " raised shield via right-click (main "
-                .. (MainEmpty and "empty" or "creative food") .. ")")
+                .. (MainEmpty and "empty" or "unusable food") .. ")")
         end
     end
 end
@@ -769,7 +812,9 @@ end
 local BlockableDamageTypes =
 {
     [dtAttack] = true,        -- Melee (mob melee, player melee)
-    [dtRangedAttack] = true,  -- Arrows, tridents, snowballs, eggs, shulker bullets, fireballs, llama spit, wither skulls
+    -- Arrows, tridents, snowballs, eggs, shulker bullets, fireballs, llama spit,
+    -- wither skulls:
+    [dtRangedAttack] = true,
     [dtExplosion] = true,     -- Creeper, ghast fireball, end crystal, bed, respawn anchor, TNT
 }
 
@@ -892,7 +937,8 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
     -- for it, so the shield is not worn down here.
     PlayShieldBlockSound(Player)
 
-    if ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkArrow and ProjectileEntity:GetProjectileKind() ~= cProjectileEntity.pkGhastFireball then
+    local Kind = ProjectileEntity:GetProjectileKind()
+    if (Kind ~= cProjectileEntity.pkArrow) and (Kind ~= cProjectileEntity.pkGhastFireball) then
         ProjectileEntity:Destroy()
         return true
     end

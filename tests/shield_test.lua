@@ -195,7 +195,10 @@ function cItem(a_Type, a_Count, a_Damage, a_Ench)
 		end
 		return NewItem(a_Type.m_ItemType, a_Type.m_ItemCount, a_Type.m_ItemDamage, Lore, a_Type.m_Enchantments)
 	end
-	return NewItem(a_Type, a_Count or 1, a_Damage or 0, nil, NewEnch({}))
+	-- a_Ench used to be dropped here, which silently discarded the enchantments of
+	-- every item built with the 4-argument form (the real cItem constructor keeps
+	-- them).
+	return NewItem(a_Type, a_Count or 1, a_Damage or 0, nil, a_Ench or NewEnch({}))
 end
 
 -- --- world / tracer --------------------------------------------------------
@@ -991,6 +994,165 @@ do
 	P.GetUUID = function() return nil end
 	local Ok = FireUsingItem(P, { air = true })
 	Check("missing UUID does not crash", Ok)
+end
+
+-- ===========================================================================
+-- Q. consumption probe (debug cross-check against the engine)
+-- ===========================================================================
+--
+-- The probe is inert unless DebugLogging is on, so this section turns it on,
+-- captures LOG() and drives the two hooks by hand. It asserts only on what the
+-- probe chooses to report, never on shield behaviour.
+
+-- Fire one HOOK_PLAYER_USED_ITEM event. a_Mutate simulates what the engine's
+-- handler would have done to the main-hand slot between the two hooks.
+local function FireUsedItem(a_Player, a_Mutate)
+	if a_Mutate then a_Mutate(a_Player) end
+	return pcall(ProbeItemConsumptionOnItemUsed, a_Player, 0, 0, 1, 1, 0, 0, 0)
+end
+
+print("== Q. consumption probe ==")
+do
+	local Captured = {}
+	local SavedLog = LOG
+	LOG = function(a_Message) Captured[#Captured + 1] = tostring(a_Message) end
+	DebugLogging = true
+
+	-- Only the probe's own lines; the USING_ITEM handler logs a trace of its own.
+	local function ProbeLines()
+		local Out = {}
+		for _, Line in ipairs(Captured) do
+			if Line:find("consumption-probe:", 1, true) then Out[#Out + 1] = Line end
+		end
+		return Out
+	end
+
+	-- Flint and steel aimed at stone: EvaluateEvent says the click is consumed.
+	local Scene = { air = false, target = E_BLOCK_STONE }
+
+	local function Lighter(a_Options)
+		a_Options = a_Options or {}
+		a_Options.main = a_Options.main or cItem(E_ITEM_FLINT_AND_STEEL)
+		a_Options.off = cItem(E_ITEM_SHIELD)
+		return NewPlayer(a_Options)
+	end
+
+	-- What the engine's cItemLighterHandler does on success.
+	local function WearMain(a_Player)
+		local Item = a_Player:GetEquippedItem()
+		Item.m_ItemDamage = Item.m_ItemDamage + 1
+	end
+
+	-- 1. Agreement, consumed: the handler damaged the item, so the slot moved.
+	do
+		Captured = {}
+		local P = Lighter()
+		Check("probe: USING_ITEM takes a snapshot", FireUsingItem(P, Scene))
+		Check("probe: USED_ITEM runs without error", FireUsedItem(P, WearMain))
+		Check("probe: agreement is silent", #ProbeLines() == 0, table.concat(ProbeLines(), " | "))
+	end
+
+	-- 2. Agreement, not consumed: inert item, slot untouched.
+	do
+		Captured = {}
+		local P = Lighter({ main = cItem(E_ITEM_STICK) })
+		FireUsingItem(P, Scene)
+		FireUsedItem(P, nil)
+		Check("probe: agreement on 'not consumed' is silent", #ProbeLines() == 0,
+			table.concat(ProbeLines(), " | "))
+	end
+
+	-- 3. Unbreaking negated the durability loss: consumed, but the slot is identical.
+	do
+		Captured = {}
+		local Ench = NewEnch({ [cEnchantments.enchUnbreaking] = 3 })
+		local P = Lighter({ main = cItem(E_ITEM_FLINT_AND_STEEL, 1, 0, Ench) })
+		FireUsingItem(P, Scene)
+		FireUsedItem(P, nil)
+		local Lines = ProbeLines()
+		Check("probe: Unbreaking disagreement is reported", #Lines == 1, table.concat(Lines, " | "))
+		Check("probe: Unbreaking disagreement is tagged explained",
+			(Lines[1] ~= nil) and (Lines[1]:find("explained", 1, true) ~= nil), Lines[1])
+	end
+
+	-- 4. Creative skipped the consumption entirely: consumed, slot identical.
+	do
+		Captured = {}
+		local P = Lighter({ creative = true })
+		FireUsingItem(P, Scene)
+		FireUsedItem(P, nil)
+		local Lines = ProbeLines()
+		Check("probe: creative disagreement is reported", #Lines == 1, table.concat(Lines, " | "))
+		Check("probe: creative disagreement is tagged explained",
+			(Lines[1] ~= nil) and (Lines[1]:find("explained", 1, true) ~= nil), Lines[1])
+	end
+
+	-- 5. Survival, no Unbreaking, consumed but the slot never moved. Synthetic:
+	--    we deliberately do not simulate the damage, so the probe sees a
+	--    disagreement it cannot explain. That is the case worth reporting.
+	do
+		Captured = {}
+		local P = Lighter()
+		FireUsingItem(P, Scene)
+		FireUsedItem(P, nil)
+		local Lines = ProbeLines()
+		Check("probe: unexplained disagreement is reported", #Lines == 1, table.concat(Lines, " | "))
+		Check("probe: unexplained disagreement is flagged SUSPICIOUS",
+			(Lines[1] ~= nil) and (Lines[1]:find("SUSPICIOUS", 1, true) ~= nil), Lines[1])
+	end
+
+	-- 6. The reverse disagreement: "not consumed" predicted, slot moved anyway.
+	do
+		Captured = {}
+		local P = Lighter({ main = cItem(E_ITEM_STICK) })
+		FireUsingItem(P, Scene)
+		FireUsedItem(P, function(a_Player)
+			local Item = a_Player:GetEquippedItem()
+			Item.m_ItemCount = Item.m_ItemCount + 1
+		end)
+		local Lines = ProbeLines()
+		Check("probe: unexpected slot change is reported", #Lines == 1, table.concat(Lines, " | "))
+		Check("probe: unexpected slot change says so",
+			(Lines[1] ~= nil) and (Lines[1]:find("unexpected slot change", 1, true) ~= nil), Lines[1])
+	end
+
+	-- 7. USED_ITEM without a preceding USING_ITEM: nothing recorded, nothing logged.
+	do
+		Captured = {}
+		local P = Lighter()
+		FireUsedItem(P, nil)
+		Check("probe: no snapshot is silent", #ProbeLines() == 0, table.concat(ProbeLines(), " | "))
+	end
+
+	-- 8. A snapshot whose USED_ITEM never arrives (another plugin cancelled the
+	--    use) must be dropped by the tick, not compared against a stale slot.
+	do
+		Captured = {}
+		local P = Lighter()
+		FireUsingItem(P, Scene)
+		Check("probe: snapshot is pending after USING_ITEM",
+			GetPlayerState(P).ConsumptionProbe ~= nil)
+		World.Players[#World.Players + 1] = P
+		pcall(CheckUseShieldOnTick, World, 50, 50)
+		World.Players[#World.Players] = nil
+		Check("probe: tick drops a stale snapshot",
+			GetPlayerState(P).ConsumptionProbe == nil)
+	end
+
+	-- 9. Disabled: the probe must neither record nor log.
+	do
+		Captured = {}
+		DebugLogging = false
+		local P = Lighter()
+		FireUsingItem(P, Scene)
+		Check("probe: disabled records nothing", GetPlayerState(P).ConsumptionProbe == nil)
+		FireUsedItem(P, nil)
+		Check("probe: disabled is silent", #ProbeLines() == 0, table.concat(ProbeLines(), " | "))
+		DebugLogging = true
+	end
+
+	LOG = SavedLog
+	DebugLogging = false
 end
 
 -- ===========================================================================

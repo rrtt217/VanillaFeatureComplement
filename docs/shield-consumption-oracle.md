@@ -206,8 +206,10 @@ if (!Grid->DamageItem(GridSlotNum, a_Amount))
 它是手写的 handler 行为模型，而 `tests/shield_test.lua` 是 mock 驱动的，
 mock 的期望值同样来自人的理解，属于用模型验证模型。
 
-这个用法的成本是 ~20 行（且可以只在 `EnableDebugLog=1` 时启用），
-收益是给 252 行的模型找到现实反例，而不是拿一个已知会错 75% 的信号去替换它。
+实现成本实测：`shield.lua` +约 105 行（含解释性注释）、`main.lua` +6 行、
+测试 +约 150 行；且只在 `[Debug] EnableDebugLog=1` 时才注册钩子，
+关闭时连快照都不记。收益是给 252 行的模型找到现实反例，
+而不是拿一个已知会错 75% 的信号去替换它。
 
 ---
 

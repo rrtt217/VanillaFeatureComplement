@@ -600,6 +600,111 @@ local function WearShield(Player, Loss)
     StoreShield(Player, cItem(), IsOffhand)
 end
 
+-- ============================================================================
+-- Consumption probe (debug only): cross-check EvaluateEvent against reality
+-- ============================================================================
+--
+-- EvaluateEvent models cItemHandler::OnItemUse by hand and the test suite checks
+-- it against a mock -- one model validating another. HOOK_PLAYER_USED_ITEM is the
+-- one independent signal available: it fires right after OnItemUse ran, so
+-- comparing the main-hand slot across the two hooks shows whether the handler
+-- touched the item at all.
+--
+-- Only the "slot changed" direction is trustworthy -- it means the click was
+-- almost certainly consumed. "Slot unchanged" proves nothing, because creative
+-- mode skips consumption entirely and Unbreaking can negate the durability loss.
+-- The probe therefore never drives behaviour: it only reports disagreements, which
+-- is how the model gets real-world feedback. Full reasoning, including the two
+-- majority-case counterexamples, in docs/shield-consumption-oracle.md.
+-- Enabled by [Debug] EnableDebugLog.
+
+---Stable identity of an inventory slot's contents, for cross-hook comparison.
+---@param Item cItem|nil
+---@return string
+local function ItemSignature(Item)
+    if (Item == nil) or Item:IsEmpty() then
+        return "empty"
+    end
+    return Item.m_ItemType .. "/" .. Item.m_ItemCount .. "/" .. Item.m_ItemDamage
+end
+
+---Snapshot the main-hand slot and EvaluateEvent's verdict for the USED_ITEM hook.
+---Called from CheckUseShieldOnUsingItem; a no-op unless debug logging is on.
+---@param Player cPlayer
+---@param Item cItem|nil
+---@param Type number
+---@param BlockType number
+---@param Consumed boolean
+local function RecordConsumptionProbe(Player, Item, Type, BlockType, Consumed)
+    if not DebugLogging then
+        return
+    end
+    local Unbreaking = 0
+    if (Item ~= nil) and (Item.m_Enchantments ~= nil) then
+        Unbreaking = Item.m_Enchantments:GetLevel(cEnchantments.enchUnbreaking)
+    end
+    GetPlayerState(Player).ConsumptionProbe =
+    {
+        Signature  = ItemSignature(Item),
+        Consumed   = Consumed,
+        Type       = Type,
+        BlockType  = BlockType,
+        Creative   = Player:IsGameModeCreative(),
+        Unbreaking = Unbreaking,
+    }
+end
+
+-- HOOK_PLAYER_USED_ITEM: fires right after cItemHandler::OnItemUse has run. Compare
+-- the main-hand slot with the snapshot taken in HOOK_PLAYER_USING_ITEM and report
+-- any disagreement with EvaluateEvent's verdict (see the section comment above).
+-- Information only: it never changes shield behaviour.
+---@param Player cPlayer
+---@param BlockX number
+---@param BlockY number
+---@param BlockZ number
+---@param BlockFace number
+---@param CursorX number
+---@param CursorY number
+---@param CursorZ number
+---@return boolean|nil
+function ProbeItemConsumptionOnItemUsed(Player, BlockX, BlockY, BlockZ, BlockFace, CursorX, CursorY, CursorZ)
+    local State = GetPlayerState(Player)
+    local Probe = State.ConsumptionProbe
+    if Probe == nil then
+        return
+    end
+    State.ConsumptionProbe = nil
+
+    local After = ItemSignature(Player:GetEquippedItem())
+    local Observed = (After ~= Probe.Signature)
+    if Observed == Probe.Consumed then
+        return  -- model and observation agree: stay quiet
+    end
+
+    local Why
+    if not Probe.Consumed then
+        -- EvaluateEvent predicted "not consumed" but the slot moved: an unrelated
+        -- inventory sync in the same tick, or a real modelling error.
+        Why = "SUSPICIOUS (unexpected slot change)"
+    elseif Probe.Creative then
+        Why = "explained (creative skips consumption)"
+    elseif Probe.Unbreaking > 0 then
+        Why = "explained (Unbreaking can negate the durability loss)"
+    else
+        Why = "SUSPICIOUS (survival, no Unbreaking, slot unchanged)"
+    end
+
+    DebugLog("consumption-probe: " .. Why ..
+        "; player=" .. Player:GetName() ..
+        " item=" .. Probe.Type ..
+        " block=" .. Probe.BlockType ..
+        " creative=" .. tostring(Probe.Creative) ..
+        " unbreaking=" .. Probe.Unbreaking ..
+        " EvaluateEvent=" .. tostring(Probe.Consumed) ..
+        " observed=" .. tostring(Observed) ..
+        " before=" .. Probe.Signature .. " after=" .. After)
+end
+
 -- HOOK_PLAYER_USING_ITEM: the "shield raised" signal, fired on the tick the
 -- client pressed right-click. For each event we decide immediately whether
 -- the main-hand item was consumed (using GetTargetedBlock as the air-use
@@ -672,6 +777,7 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
     if not Consumed then
         RaiseShield(Player)
     end
+    RecordConsumptionProbe(Player, Item, Type, BlockType, Consumed)
     DebugLog("Player " .. Player:GetName() .. " using item " .. Type ..
         " consumed=" .. tostring(Consumed) ..
         " definitive=" .. tostring(Definitive) ..
@@ -690,6 +796,13 @@ function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
         ---@param Player cPlayer
         function(Player)
             local State = GetPlayerState(Player)
+
+            -- A probe snapshot left over from an earlier tick means
+            -- HOOK_PLAYER_USED_ITEM never fired (another plugin cancelled the
+            -- use), so drop it rather than compare against a stale slot.
+            if DebugLogging then
+                State.ConsumptionProbe = nil
+            end
 
             -- Safety net: a raised shield must never outlive the shield itself.
             -- HOOK_PLAYER_TOSSING_ITEM only fires for the Q-drop and the window

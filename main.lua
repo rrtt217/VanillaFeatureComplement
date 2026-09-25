@@ -119,6 +119,12 @@ function Initialize(Plugin)
         cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_RIGHT_CLICK,CheckUseShieldOnRightClick)
         cPluginManager:AddHook(cPluginManager.HOOK_TAKE_DAMAGE,CheckUseShieldOnTakeDamage)
         cPluginManager:AddHook(cPluginManager.HOOK_PROJECTILE_HIT_ENTITY,CheckUseShieldOnProjectileHitEntity)
+        if DebugLogging then
+            -- Debug only: cross-check EvaluateEvent against the engine's own
+            -- behaviour (see the consumption probe section in shield.lua).
+            LOG("HOOK_PLAYER_USED_ITEM has been added to the shield consumption probe!")
+            cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_USED_ITEM,ProbeItemConsumptionOnItemUsed)
+        end
     end
     if Config:GetValueSetB("Features","EnablePlayerKilledXpDropFix",true) then
         LOG("HOOK_KILLING has been added to EnablePlayerKilledXpDropFix!")

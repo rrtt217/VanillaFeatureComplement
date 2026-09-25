@@ -733,15 +733,16 @@ end
 
 local LorePrefix = "Durability: "
 local function ShieldWith(a_Remaining, a_Unbreaking)
-	local Lore = {}
-	if a_Remaining ~= nil then
-		Lore[1] = LorePrefix .. a_Remaining .. "/336"
+	-- Remaining durability is carried in the damage field: damage = 336 - remaining.
+	local Damage = 0
+	if (a_Remaining ~= nil) then
+		Damage = 336 - a_Remaining
 	end
 	local Levels = {}
 	if (a_Unbreaking ~= nil) and (a_Unbreaking > 0) then
 		Levels[cEnchantments.enchUnbreaking] = a_Unbreaking
 	end
-	return NewItem(E_ITEM_SHIELD, 1, 0, Lore, NewEnch(Levels))
+	return NewItem(E_ITEM_SHIELD, 1, Damage, nil, NewEnch(Levels))
 end
 
 local function ShieldWithLore(a_Lore)
@@ -749,13 +750,8 @@ local function ShieldWithLore(a_Lore)
 end
 
 local function DurabilityOf(a_Item)
-	if (a_Item == nil) or (a_Item.m_LoreTable == nil) then return nil end
-	for _, Line in ipairs(a_Item.m_LoreTable) do
-		if (Line:sub(1, #LorePrefix) == LorePrefix) then
-			return tonumber(Line:match("(%d+)"))
-		end
-	end
-	return nil
+	if (a_Item == nil) then return nil end
+	return 336 - (a_Item.m_ItemDamage or 0)
 end
 
 local function RaisedWithShield(a_Shield, a_PlayerOptions)
@@ -840,12 +836,18 @@ do
 	Check("a broken shield lowers the state", not IsRaised(P))
 end
 do
-	-- Custom lore lines must survive the durability bookkeeping.
+	-- A shield saved by the older, lore-based scheme is migrated on its first hit:
+	-- the counter moves into the damage field and that lore line disappears, while
+	-- any player-written lore line survives untouched.
 	local P = RaisedWithShield(ShieldWithLore({ "My favourite shield", LorePrefix .. "50/336" }))
 	Damage(P, dtAttack, 5)  -- 6 points
-	local Lore = P.State.off.m_LoreTable
-	Check("durability update keeps the custom lore line", Lore[1] == "My favourite shield", Lore[1])
-	Check("durability update rewrites the counter line", Lore[2] == LorePrefix .. "44/336", Lore[2])
+	Check("legacy counter migrated into the damage field", DurabilityOf(P.State.off) == 44,
+		"durability=" .. tostring(DurabilityOf(P.State.off)))
+	Check("damage field holds 336 - remaining", P.State.off.m_ItemDamage == 336 - 44,
+		"damage=" .. tostring(P.State.off.m_ItemDamage))
+	local Lore = P.State.off.m_LoreTable or {}
+	Check("legacy counter line is dropped", #Lore == 1, "lines=" .. #Lore)
+	Check("custom lore line survives", Lore[1] == "My favourite shield", tostring(Lore[1]))
 end
 do
 	-- A pristine shield (no lore yet) starts at the full 336.

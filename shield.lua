@@ -450,11 +450,10 @@ end
 ---Find the shield the player is currently holding (main or off hand), together
 ---with the slot it came from, so a modified item can be written back.
 ---
----The item is returned as an owned COPY: assigning a property such as m_LoreTable
----on the userdata handed out by GetEquippedItem()/GetOffHandEquipedItem() fails
----with "The 'self' parameter is not of the expected type, instance of cItem", so
----the lore can only be edited on a cItem the plugin owns (the map code wraps slots
----in cItem() for the same reason).
+---Returned as an owned COPY: the main-hand getter hands out a live `const cItem`
+---reference and the off-hand one a by-value copy, so copying normalises both for
+---StoreShield. It is required anyway for members declared in ManualBindings.cpp
+---(m_LoreTable), which reject the `const cItem` view via CheckParamSelf("cItem").
 ---@param Player cPlayer
 ---@return cItem|nil
 ---@return boolean IsOffhand  true when the shield sits in the off hand slot
@@ -513,43 +512,35 @@ end
 ---Maximum durability of a shield (the vanilla value).
 local SHIELD_DURABILITY_MAX = 336
 
----Prefix of the lore line that stores a shield's remaining durability. The line is
----read back whenever the shield blocks again, so the format must stay stable:
----    "Durability: <remaining>/336"
-local SHIELD_DURABILITY_PREFIX = "Durability: "
-
----Read the durability stored in a shield's lore.
+---Remaining durability lives in the shield's damage field: cItem::GetMaxDamage() has
+---no E_ITEM_SHIELD case, so the engine never reads or writes m_ItemDamage for a
+---shield, and the client draws its own durability bar from it.
 ---@param Item cItem
----@return number|nil  nil for a shield without a counter yet (= pristine)
+---@return number
 local function GetShieldDurability(Item)
-    local Lore = Item.m_LoreTable
-    if not Lore then
-        return nil
-    end
-    for _, Line in ipairs(Lore) do
-        if Line:sub(1, #SHIELD_DURABILITY_PREFIX) == SHIELD_DURABILITY_PREFIX then
-            return tonumber(Line:match("(%d+)"))
-        end
-    end
-    return nil
+    return math.max(0, math.min(SHIELD_DURABILITY_MAX, SHIELD_DURABILITY_MAX - (Item.m_ItemDamage or 0)))
 end
 
----Write the remaining durability into a shield's lore, leaving any other lore line
----(custom names, player-written lore) untouched.
+---Record the remaining durability in the shield's damage field.
 ---@param Item cItem
 ---@param Remaining number
 local function SetShieldDurability(Item, Remaining)
-    local Lore = Item.m_LoreTable or {}
-    local Line = SHIELD_DURABILITY_PREFIX .. Remaining .. "/" .. SHIELD_DURABILITY_MAX
-    for i, Existing in ipairs(Lore) do
-        if Existing:sub(1, #SHIELD_DURABILITY_PREFIX) == SHIELD_DURABILITY_PREFIX then
-            Lore[i] = Line
+    Item.m_ItemDamage = SHIELD_DURABILITY_MAX - Remaining
+end
+
+---Shields saved by the pre-m_ItemDamage build carry the counter as the lore line
+---"Durability: <left>/336"; fold it into the damage field and drop that line.
+---@param Item cItem
+local function MigrateLegacyDurability(Item)
+    local Lore = Item.m_LoreTable
+    for Index = #(Lore or {}), 1, -1 do
+        local Left = Lore[Index]:match("^Durability: (%d+)/")
+        if Left then
+            Item.m_ItemDamage = SHIELD_DURABILITY_MAX - Left
+            table.remove(Lore, Index)
             Item.m_LoreTable = Lore
-            return
         end
     end
-    table.insert(Lore, Line)
-    Item.m_LoreTable = Lore
 end
 
 ---Store a (possibly modified) shield back into the slot it was read from.
@@ -568,7 +559,8 @@ end
 ---Wear the raised shield down by the given amount of durability.
 ---
 ---Cuberite has no native shield durability, so the remaining durability is stored
----in the item's lore. The amount follows vanilla's damageShield(): only hits of 3+
+---in the item's damage field (see GetShieldDurability). The amount follows vanilla's
+---damageShield(): only hits of 3+
 ---damage wear a shield, for 1 + floor(damage) points. Unbreaking negates each point
 ---with a chance of 1 / (level + 1) (like ItemStack#attemptDamageItem), creative
 ---players do not wear items, and the shield is removed once the counter runs out.
@@ -582,6 +574,7 @@ local function WearShield(Player, Loss)
     if not Shield then
         return
     end
+    MigrateLegacyDurability(Shield)
 
     local Unbreaking = Shield.m_Enchantments:GetLevel(cEnchantments.enchUnbreaking)
     local Applied = 0
@@ -595,7 +588,7 @@ local function WearShield(Player, Loss)
         return
     end
 
-    local Remaining = (GetShieldDurability(Shield) or SHIELD_DURABILITY_MAX) - Applied
+    local Remaining = GetShieldDurability(Shield) - Applied
     if Remaining > 0 then
         SetShieldDurability(Shield, Remaining)
         StoreShield(Player, Shield, IsOffhand)
@@ -687,8 +680,8 @@ end
 
 -- HOOK_WORLD_TICK: drop a raised-shield state whose shield has left both hands
 -- (see the safety net in the handler below). Shield durability is applied by
--- CheckUseShieldOnTakeDamage itself, where it is stored in the shield's lore, so
--- there is nothing left to defer to a tick.
+-- CheckUseShieldOnTakeDamage itself, where it is stored in the shield's damage
+-- field, so there is nothing left to defer to a tick.
 ---@param World cWorld
 ---@param TimeDelta number  milliseconds since the last tick
 ---@param LastTickDurationMSec number

@@ -17,7 +17,10 @@ Currently includes:
     - Deflects projectiles (Cuberite reports no damage for those, so they do not wear the shield)
     - Plays the vanilla shield block sound on every block
     - Wears the shield down like vanilla: hits of 3+ damage cost 1 + floor(damage) durability, reduced by Unbreaking, and nothing is worn in creative
-    - Durability is stored in the shield's lore (`Durability: <left>/336`), because Cuberite has no native shield durability support
+    - Durability is stored in the shield's unused damage field (`m_ItemDamage`): `cItem::GetMaxDamage()`
+      has no shield case, so the engine never reads or writes that field for a shield, and the client draws
+      its own durability bar from it. Shields saved with the older lore-based counter are migrated to the
+      damage field on their next hit
     - Limitation: offhand shield raising uses heuristics, so rare interaction patterns may still mis-detect shield use
 - End platform generation
 - Sleep clears weather

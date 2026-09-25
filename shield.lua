@@ -391,6 +391,15 @@ local function EvaluateEvent(Player, Type, BlockType)
         -- is always consumed.
         return true, true
     end
+    if Type == E_ITEM_EMPTY_MAP then
+        -- cItemEmptyMapHandler::OnItemUse ignores the clicked block and face
+        -- entirely: it creates a new map -- cMapManager::CreateMap is called from
+        -- here and nowhere else -- and replaces the item with the filled map. The
+        -- right-click is therefore consumed whatever the player aims at, air
+        -- included. Not modelling this made the offhand shield rise on every
+        -- empty-map use.
+        return true, true
+    end
     if Type == E_ITEM_SPAWN_EGG then
         -- Spawn egg: consumed iff it actually spawns a mob, i.e. the player is
         -- aiming at a non-air block (solid or fluid). Aiming at nothing within

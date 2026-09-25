@@ -514,6 +514,8 @@ OffhandCase("golden apple (special food)", "E_ITEM_GOLDEN_APPLE", { target = E_B
 OffhandCase("chorus fruit (special food)", "E_ITEM_CHORUS_FRUIT", { target = E_BLOCK_STONE }, false)
 OffhandCase("milk (drinkable)", "E_ITEM_MILK", { target = E_BLOCK_STONE }, false)
 OffhandCase("potion (drinkable)", "E_ITEM_POTION", { target = E_BLOCK_STONE }, false)
+OffhandCase("empty map (creates a map)", "E_ITEM_EMPTY_MAP", { air = true }, false)
+OffhandCase("empty map aimed at a block", "E_ITEM_EMPTY_MAP", { target = E_BLOCK_STONE }, false)
 
 print("== B. offhand shield: bow ==")
 OffhandCase("bow + arrows", "E_ITEM_BOW", { air = true }, false, { arrows = true })

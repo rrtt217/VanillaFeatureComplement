@@ -3,7 +3,10 @@ A Cuberite Plugin that adds some Vanilla feature that is missing in Cuberite.
 Currently includes:
 - Map zoomout and clone on crafting table
     - Zooming out keeps the picture the map already has (copied at half resolution, centred) instead of wiping it
-    - Limitation: the zoomed map reuses the original map number, so every copy of that map zooms together. Vanilla hands out a new map id, which needs cMapManager::CreateMap -- not exposed to Lua by upstream; the plugin uses it automatically on a server that binds it
+    - Limitation: the zoomed map reuses the original map number, so every copy of that map zooms together. Vanilla hands out a new map id, which needs cMapManager::CreateMap -- not exposed to Lua by upstream; the plugin uses it automatically on a server that binds it.
+      Creating a map from Lua by any other route was investigated and rejected (the engine has exactly one
+      caller of CreateMap, and every workaround merely moves the shared-id problem elsewhere):
+      see [docs/map-construction-research.md](docs/map-construction-research.md)
 - Elytra powered flight by firework
     - Uses the rocket's real flight time, read out of its undocumented `cFireworkItem` payload
       (see `firework_item.lua`); falls back to a random 20-60 ticks only when the payload is unreadable

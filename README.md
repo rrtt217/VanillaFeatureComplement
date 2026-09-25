@@ -5,7 +5,12 @@ Currently includes:
     - Zooming out keeps the picture the map already has (copied at half resolution, centred) instead of wiping it
     - Limitation: the zoomed map reuses the original map number, so every copy of that map zooms together. Vanilla hands out a new map id, which needs cMapManager::CreateMap -- not exposed to Lua by upstream; the plugin uses it automatically on a server that binds it
 - Elytra powered flight by firework
-    - random time if no firework star; no damage on firework star explosion
+    - Uses the rocket's real flight time, read out of its undocumented `cFireworkItem` payload
+      (see `firework_item.lua`); falls back to a random 20-60 ticks only when the payload is unreadable
+    - No damage on firework star explosion
+    - Limitation: a rocket carrying no firework colours is still rejected by the engine, so it uses
+      the speed-push fallback; another firework item's payload can be copied onto it with
+      `FireworkItem.Copy()`
 - Shield support
     - Raises main- or offhand shield when right-click does not consume the main hand item
     - Blocks melee, ranged, and explosion damage from the front
@@ -31,6 +36,17 @@ them only while debugging:
 [Debug]
 EnableDebugLog=1
 ```
+
+## Reading `cItem.m_FireworkItem`
+
+`firework_item.lua` exposes Cuberite's undocumented `cFireworkItem` payload through
+`tolua.cast()` type punning. On this build it can read `Type` and `FlightTimeInTicks`,
+count the entries of both colour lists, and copy the whole payload (colours included)
+between items — the only way to give a rocket the colours the engine demands. Colour
+*values* are not reachable. Every cast is guarded, because `tolua.cast()` to an
+unregistered type name SIGSEGVs the server.
+
+Full method, evidence and hazards: [docs/m_FireworkItem-research.md](docs/m_FireworkItem-research.md).
 
 ## Tests
 

@@ -27,16 +27,27 @@ function StartPoweredFilghtOnPlayerUsingItem(Player, BlockX, BlockY, BlockZ, Blo
             -- cWorld:CreateProjectile returns cEntity::INVALID_ID (0) for a rocket
             -- without firework colours (cProjectileEntity::Create returns nullptr
             -- when m_FireworkItem.m_Colours is empty), so no entity exists for the
-            -- client to boost from; the Lua API cannot supply the missing colours
-            -- (m_Colours is not exposed to Lua, cFireworkItem cannot be built).
+            -- client to boost from.
+            -- The colour VALUES still cannot be built from Lua, but the payload
+            -- itself is reachable with tolua.cast() -- see firework_item.lua and
+            -- docs/m_FireworkItem-research.md: its FlightTimeInTicks can be read,
+            -- and the whole struct (colours included) can be copied from another
+            -- firework item with FireworkItem.Copy().
             -- Fall back to pushing the player along the look vector for a few ticks:
             -- cPlayer::BroadcastMovementUpdate sends that speed to the client as an
             -- Entity Velocity packet, so this push is not a no-op.
             DebugLog("Player " .. Player:GetName() .. " used a firework rocket without firework data (no colours); no boost entity could be spawned, using the speed-push fallback")
-            math.randomseed(os.time())
-            -- Player.ElytraFireWorkTime = Item.m_FireworkItem["FlightTimeInTicks"]
-            -- Can't get actual data, set to 20~60 ticks.
-            State.ElytraFireWorkTime = math.random(20,60)
+            local FireworkInfo = nil
+            if FireworkItem ~= nil then
+                FireworkInfo = FireworkItem.GetInfo(Item)
+            end
+            if (FireworkInfo ~= nil) and (FireworkInfo.FlightTimeInTicks > 0) then
+                State.ElytraFireWorkTime = FireworkInfo.FlightTimeInTicks
+            else
+                -- No readable payload (or a zero flight time): 20~60 ticks.
+                math.randomseed(os.time())
+                State.ElytraFireWorkTime = math.random(20,60)
+            end
         else
             -- A leftover fallback window from an earlier entity-less rocket must not
             -- keep pushing the player now that a real entity is doing the job.

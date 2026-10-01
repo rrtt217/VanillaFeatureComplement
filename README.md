@@ -30,6 +30,21 @@ Currently includes:
 - Player death XP and off-hand drop fix
     - Players drop experience orbs worth min(7 × level, 100) on death, regardless of cause
     - The off-hand (shield) slot item is dropped on death (Cuberite clears it without dropping)
+- Village location detection
+    - `/villages [radius]` in game, and `villages <x> <z> [radius] [world]` on the console,
+      list the village grid cells near a point, nearest first, and name the village type once
+      the origin chunk is loaded
+    - The engine exposes nothing about structures (`cPrefab` and friends are not bound at all),
+      so the placement is reimplemented exactly, including the unbound `cNoise::IntNoise2DInt`:
+      see [docs/village-location.md](docs/village-location.md)
+    - Verified end-to-end against the real generator: the predicted origins that pass the biome
+      filter hold a village, the one that fails holds none
+    - The chests those villages place are now stocked: village prefabs can carry only
+      `BLOCKTYPE` + `NIBBLETYPE`, so the cubesets place chests (PlainsVillage has four) but
+      cannot say what is inside. The plugin fills them at `HOOK_CHUNK_GENERATED`, choosing a
+      table from the blocks the prefab left around the chest (furnace -> Weaponsmith,
+      hay/hopper -> Farm, otherwise House). The engine's own mineshaft and dungeon chests are
+      already stocked by then and are left alone
 
 ## Settings
 
@@ -67,3 +82,20 @@ luajit tests/shield_test.lua      # Lua 5.1 (the version Cuberite embeds)
 ```
 
 It exits 0 only when every check passes.
+
+Village location detection ships with its own suite. The port is compared against an
+independent Node implementation that uses native 32-bit arithmetic, so the comparison tests
+the port instead of restating it:
+
+```sh
+lua    tests/village_locate_test.lua
+luajit tests/village_locate_test.lua
+```
+
+Village chest contents ship with their own suite too, covering the roller, the table
+classifier and the rule that only *empty* chests are touched:
+
+```sh
+lua    tests/village_loot_test.lua
+luajit tests/village_loot_test.lua
+```

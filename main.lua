@@ -77,7 +77,7 @@ end
 
 function Initialize(Plugin)
 	Plugin:SetName("VanillaFeatureComplement")
-	Plugin:SetVersion(4)
+	Plugin:SetVersion(5)
 
     -- Load Config
     local path = Plugin:GetLocalFolder() .. "/settings.ini"
@@ -129,6 +129,18 @@ function Initialize(Plugin)
     if Config:GetValueSetB("Features","EnablePlayerKilledXpDropFix",true) then
         LOG("HOOK_KILLING has been added to EnablePlayerKilledXpDropFix!")
         cPluginManager:AddHook(cPluginManager.HOOK_KILLING,OnKillingDropXpAndOffhand)
+    end
+    if Config:GetValueSetB("Features","EnableVillageLocate",true) then
+        LOG("Command /villages has been added to EnableVillageLocate!")
+        cPluginManager:BindCommand("/villages", "", VillageLocate.Command,
+            " [radius] - lists nearby village grid cells, and which village they hold once the origin chunk is loaded")
+        cPluginManager:BindConsoleCommand("villages", VillageLocate.ConsoleCommand,
+            " <x> <z> [radius] [world] - lists village grid cells near a point")
+    end
+    if Config:GetValueSetB("Features","EnableVillageLoot",true) then
+        LOG("HOOK_CHUNK_GENERATED has been added to EnableVillageLoot!")
+        VillageLoot.Enabled = true
+        cPluginManager:AddHook(cPluginManager.HOOK_CHUNK_GENERATED,VillageLoot.OnChunkGenerated)
     end
     -- Per-player state lifecycle: reset on death, clean up on disconnect.
     cPluginManager:AddHook(cPluginManager.HOOK_KILLING,ResetCombatStateOnKilling)

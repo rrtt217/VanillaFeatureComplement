@@ -102,10 +102,16 @@ dtFall         = 4
 
 cProjectileEntity =
 {
-	pkArrow        = 1,
-	pkGhastFireball = 2,
-	pkSplashPotion = 3,
-	pkSnowball     = 4,
+	pkArrow         = 1,
+	pkEgg           = 2,
+	pkEnderPearl    = 3,
+	pkSnowball      = 4,
+	pkGhastFireball = 5,
+	pkFireCharge    = 6,
+	pkExpBottle     = 7,
+	pkSplashPotion  = 8,
+	pkWitherSkull   = 9,
+	pkFirework      = 10,
 }
 
 cEnchantments = { enchUnbreaking = 17 }
@@ -144,6 +150,59 @@ end
 function Vector3i(a_X, a_Y, a_Z)
 	if (type(a_X) == "table") then return Conv(a_X) end
 	return NewVec(a_X, a_Y, a_Z)
+end
+
+-- --- bounding boxes --------------------------------------------------------
+--
+-- Mirrors cBoundingBox just enough for the shield's projectile impact gate. The
+-- intersection coefficient is deliberately NOT clamped to 1: the engine's
+-- cBoundingBox::CalcLineIntersection is a ray (half-line) test, which is exactly
+-- why HOOK_PROJECTILE_HIT_ENTITY fires for projectiles that are still far away.
+
+local BoxMT = {}
+BoxMT.__index = BoxMT
+
+local function NewBox(a_MinX, a_MinY, a_MinZ, a_MaxX, a_MaxY, a_MaxZ)
+	return setmetatable({
+		min = NewVec(a_MinX, a_MinY, a_MinZ),
+		max = NewVec(a_MaxX, a_MaxY, a_MaxZ),
+	}, BoxMT)
+end
+
+function BoxMT:Expand(a_X, a_Y, a_Z)
+	self.min.x, self.min.y, self.min.z = self.min.x - a_X, self.min.y - a_Y, self.min.z - a_Z
+	self.max.x, self.max.y, self.max.z = self.max.x + a_X, self.max.y + a_Y, self.max.z + a_Z
+end
+
+function BoxMT:IsInside(a_Point)
+	return (a_Point.x >= self.min.x) and (a_Point.x <= self.max.x)
+		and (a_Point.y >= self.min.y) and (a_Point.y <= self.max.y)
+		and (a_Point.z >= self.min.z) and (a_Point.z <= self.max.z)
+end
+
+function BoxMT:CalcLineIntersection(a_Line1, a_Line2)
+	if self:IsInside(a_Line1) then
+		return true, 0
+	end
+	local D = NewVec(a_Line2.x - a_Line1.x, a_Line2.y - a_Line1.y, a_Line2.z - a_Line1.z)
+	local Coeff = math.huge
+	for _, Axis in ipairs({ "x", "y", "z" }) do
+		if D[Axis] ~= 0 then
+			for _, Plane in ipairs({ self.min[Axis], self.max[Axis] }) do
+				local C = (Plane - a_Line1[Axis]) / D[Axis]
+				if (C >= 0) and (C < Coeff) then
+					local HitPoint = NewVec(a_Line1.x + D.x * C, a_Line1.y + D.y * C, a_Line1.z + D.z * C)
+					if self:IsInside(HitPoint) then
+						Coeff = C
+					end
+				end
+			end
+		end
+	end
+	if Coeff == math.huge then
+		return false
+	end
+	return true, Coeff
 end
 
 -- --- items -----------------------------------------------------------------
@@ -301,6 +360,10 @@ local function NewPlayer(a_Options)
 	function P:GetPosX() return 0 end
 	function P:GetPosY() return 0 end
 	function P:GetPosZ() return 0 end
+	function P:GetBoundingBox()
+		-- 0.6 x 1.8 footprint with the feet at the player position, like cEntity::GetBoundingBox
+		return NewBox(-0.3, 0, -0.3, 0.3, 1.8, 0.3)
+	end
 
 	local Inventory = {}
 	Inventory.m_Player = P
@@ -882,12 +945,17 @@ do
 		return {
 			m_Kind = a_Kind,
 			GetPosX = function() return 0 end,
-			GetPosY = function() return 0 end,
-			GetPosZ = function() return 1 end,   -- +Z: in front of the player's look vector
+			GetPosY = function() return 1.0 end,
+			-- 0.3 blocks in front, already inside the player's box once it is expanded by
+			-- the projectile size, so the impact gate lets the deflection through.
+			GetPosZ = function() return 0.3 end,
 			GetProjectileKind = function(self) return self.m_Kind end,
-			GetSpeed = function() return Vector3d(1, 0, 0) end,
+			-- moving towards the player (the shield only blocks approaching projectiles)
+			GetSpeed = function() return Vector3d(0, 0, -3) end,
 			SetSpeed = function(self, a_Speed) self.m_Speed = a_Speed end,
 			Destroy = function(self) self.m_Destroyed = true end,
+			GetWidth = function() return 0.5 end,
+			GetHeight = function() return 0.5 end,
 		}
 	end
 
@@ -902,14 +970,86 @@ do
 	local _, PassArrow = pcall(CheckUseShieldOnProjectileHitEntity, Arrow, P)
 	Check("deflect arrow: flies through", PassArrow == true)
 	Check("deflect arrow: is not destroyed", Arrow.m_Destroyed == nil)
-	Check("deflect arrow: speed is reversed", (Arrow.m_Speed ~= nil) and (Arrow.m_Speed.x == -1),
-		tostring(Arrow.m_Speed and Arrow.m_Speed.x))
+	Check("deflect arrow: speed is reversed", (Arrow.m_Speed ~= nil) and (Arrow.m_Speed.z == 3),
+		tostring(Arrow.m_Speed and Arrow.m_Speed.z))
 
 	-- From behind the projectile still hits.
 	local Behind = Projectile(cProjectileEntity.pkSnowball)
 	Behind.GetPosZ = function() return -1 end
+	-- approaching, but from behind the player's look direction
+	Behind.GetSpeed = function() return Vector3d(0, 0, 3) end
 	local _, PassBehind = pcall(CheckUseShieldOnProjectileHitEntity, Behind, P)
 	Check("a projectile from behind is not deflected", PassBehind == false)
+
+	-- The engine fires HOOK_PROJECTILE_HIT_ENTITY for every entity whose box the
+	-- projectile's velocity ray hits (cBoundingBox::CalcLineIntersection is a ray,
+	-- not a segment) and only afterwards checks whether the intersection is within
+	-- this tick's movement. The plugin must ignore hits that are still ahead.
+	local Far = Projectile(cProjectileEntity.pkSnowball)
+	Far.GetPosX = function() return 0 end
+	Far.GetPosY = function() return 1.0 end
+	Far.GetPosZ = function() return 10.0 end
+	Far.GetSpeed = function() return Vector3d(0, 0, -30) end
+	local _, PassFar = pcall(CheckUseShieldOnProjectileHitEntity, Far, P)
+	Check("impact gate: a far projectile on the ray is not deflected", PassFar == false)
+	Check("impact gate: a far projectile is not destroyed", Far.m_Destroyed == nil)
+	Check("impact gate: a far projectile speed is untouched", Far.m_Speed == nil)
+
+	local Near = Projectile(cProjectileEntity.pkArrow)
+	Near.GetPosX = function() return 0 end
+	Near.GetPosY = function() return 1.0 end
+	Near.GetPosZ = function() return 2.0 end
+	Near.GetSpeed = function() return Vector3d(0, 0, -30) end
+	local _, PassNear = pcall(CheckUseShieldOnProjectileHitEntity, Near, P)
+	-- A projectile that is already leaving the player must not be bounced again:
+	-- the engine still reports it (it starts inside the expanded box) and reversing
+	-- it here is what used to make a bounced arrow ping-pong against the shield.
+	local Leaving = Projectile(cProjectileEntity.pkArrow)
+	Leaving.GetPosX = function() return 0 end
+	Leaving.GetPosY = function() return 1.0 end
+	Leaving.GetPosZ = function() return 0.3 end
+	Leaving.GetSpeed = function() return Vector3d(0, 0, 3) end
+	local _, PassLeaving = pcall(CheckUseShieldOnProjectileHitEntity, Leaving, P)
+	Check("impact gate: a projectile leaving the player flies through", PassLeaving == true)
+	Check("impact gate: a projectile leaving the player is not bounced again", Leaving.m_Speed == nil)
+
+	Check("impact gate: a projectile reaching the player this tick is deflected", PassNear == true)
+	Check("impact gate: a projectile reaching the player this tick is bounced",
+		(Near.m_Speed ~= nil) and (Near.m_Speed.z == 30),
+		tostring(Near.m_Speed and Near.m_Speed.z))
+
+	-- Kinds a raised shield does not interact with: the handler must let the engine
+	-- run the kind's normal hit handling (entirely secondary effects, or vanilla shield
+	-- behaviour such as "potions still splash" / "the pearl still teleports").
+	for _, Kind in ipairs({
+		cProjectileEntity.pkGhastFireball,
+		cProjectileEntity.pkExpBottle,
+		cProjectileEntity.pkFirework,
+		cProjectileEntity.pkSplashPotion,
+		cProjectileEntity.pkEnderPearl,
+	}) do
+		local Ignored = Projectile(Kind)
+		local OkND, PassND = pcall(CheckUseShieldOnProjectileHitEntity, Ignored, P)
+		Check("shield-ignored kind " .. Kind .. ": no Lua error", OkND)
+		Check("shield-ignored kind " .. Kind .. ": is not cancelled", PassND == false)
+		Check("shield-ignored kind " .. Kind .. ": is not destroyed", Ignored.m_Destroyed == nil)
+		Check("shield-ignored kind " .. Kind .. ": speed is untouched", Ignored.m_Speed == nil)
+	end
+
+	-- A fire charge has no TakeDamage() of its own either, but vanilla shields
+	-- destroy a blocked one instead of letting it light fire / set the player on fire.
+	local FireCharge = Projectile(cProjectileEntity.pkFireCharge)
+	local _, PassFireCharge = pcall(CheckUseShieldOnProjectileHitEntity, FireCharge, P)
+	Check("fire charge: is cancelled", PassFireCharge == true)
+	Check("fire charge: is destroyed", FireCharge.m_Destroyed == true)
+	Check("fire charge: is not bounced", FireCharge.m_Speed == nil)
+
+	-- A "0 damage" kind that is NOT shield-ignored (wither skull) is still
+	-- intercepted: it carries a real damage event, not a secondary effect.
+	local WitherSkull = Projectile(cProjectileEntity.pkWitherSkull)
+	local _, PassWither = pcall(CheckUseShieldOnProjectileHitEntity, WitherSkull, P)
+	Check("0-damage projectile (wither skull): is cancelled", PassWither == true)
+	Check("0-damage projectile (wither skull): is destroyed", WitherSkull.m_Destroyed == true)
 end
 
 -- ===========================================================================

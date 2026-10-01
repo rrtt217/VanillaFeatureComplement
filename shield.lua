@@ -793,6 +793,11 @@ function CheckUseShieldOnUsingItem(Player, BlockX, BlockY, BlockZ, BlockFace, Cu
         " blockType=" .. BlockType)
 end
 
+---Length of the most recent world tick, in seconds. HOOK_WORLD_TICK's TimeDelta
+---is the same value the engine feeds the projectile physics as its dt, so it lets
+---the projectile hook reproduce the engine's per-tick collision test exactly.
+local LastTickSeconds = 0.05
+
 -- HOOK_WORLD_TICK: drop a raised-shield state whose shield has left both hands
 -- (see the safety net in the handler below). Shield durability is applied by
 -- CheckUseShieldOnTakeDamage itself, where it is stored in the shield's damage
@@ -801,6 +806,9 @@ end
 ---@param TimeDelta number  milliseconds since the last tick
 ---@param LastTickDurationMSec number
 function CheckUseShieldOnTick(World, TimeDelta, LastTickDurationMSec)
+    if TimeDelta and (TimeDelta > 0) then
+        LastTickSeconds = TimeDelta / 1000
+    end
     World:ForEachPlayer(
         ---@param Player cPlayer
         function(Player)
@@ -1027,6 +1035,27 @@ function CheckUseShieldOnTakeDamage(Receiver, TDI)
     return true
 end
 
+---Projectile kinds a raised shield does not interact with at all: the handler returns
+---false and the engine runs the kind's normal hit handling. Per kind:
+---  * pkGhastFireball / pkFirework -- their own hit deals no damage; whatever damage
+---    they cause comes from the explosion, which the shield still blocks through
+---    HOOK_TAKE_DAMAGE (explosions are a blockable damage type);
+---  * pkExpBottle -- no damage at all, it only spawns experience orbs;
+---  * pkSplashPotion -- vanilla shields do not stop potion effects;
+---  * pkEnderPearl -- vanilla shields do not destroy the pearl; the thrower still
+---    teleports.
+---
+---Everything else is intercepted: an arrow is bounced, and a fire charge or one of the
+---remaining "0 damage" kinds (egg, snowball, wither skull) is destroyed.
+local ShieldIgnoredProjectiles =
+{
+    [cProjectileEntity.pkGhastFireball] = true,
+    [cProjectileEntity.pkExpBottle]     = true,
+    [cProjectileEntity.pkFirework]      = true,
+    [cProjectileEntity.pkSplashPotion]  = true,
+    [cProjectileEntity.pkEnderPearl]    = true,
+}
+
 -- HOOK_PROJECTILE_HIT_ENTITY: when a projectile hits a player with a raised
 -- shield from the front, deflect the projectile instead of letting it hit.
 ---@param ProjectileEntity cProjectileEntity  the projectile
@@ -1042,10 +1071,68 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
         return false
     end
 
+    -- Kinds the shield does not interact with are left entirely to the engine (see
+    -- ShieldIgnoredProjectiles).
+    if ShieldIgnoredProjectiles[ProjectileEntity:GetProjectileKind()] then
+        return false
+    end
+
+    -- A projectile that is no longer moving towards the player has already been
+    -- bounced (or is merely overlapping the player while leaving). The engine still
+    -- reports it: cBoundingBox::CalcLineIntersection treats a start point that is
+    -- inside the (expanded) box as a hit with coefficient 0, whatever the velocity
+    -- direction. Keep letting such a projectile fly through, but do not reverse it
+    -- again -- reversing it here is what made a bounced arrow ping-pong against the
+    -- shield. This must run before the "from the front" test: the engine has just
+    -- moved the bounced projectile past the player's centre, so the position-based
+    -- front test would report the projectile as being behind the player.
+    local ToPlayer = Vector3d(
+        Player:GetPosX() - ProjectileEntity:GetPosX(),
+        (Player:GetPosY() + 0.9) - ProjectileEntity:GetPosY(),
+        Player:GetPosZ() - ProjectileEntity:GetPosZ())
+    local Speed = ProjectileEntity:GetSpeed()
+    if Speed:Dot(ToPlayer) <= 0 then
+        return true
+    end
+
     -- Determine attack direction from the projectile's position relative to the
     -- player (the projectile is at the attacker's side when it hits).
     if not IsAttackFromFront(Player, ProjectileEntity) then
         return false
+    end
+
+    -- Cuberite fires HOOK_PROJECTILE_HIT_ENTITY for every entity whose expanded
+    -- bounding box the projectile's velocity *ray* hits, not only for the entity it
+    -- actually reaches this tick. cProjectileEntityCollisionCallback runs the
+    -- entity collision first and only then checks whether the intersection
+    -- coefficient is < 1 (ProjectileEntity.cpp), and
+    -- cBoundingBox::CalcLineIntersection has no upper bound (BoundingBox.cpp) --
+    -- it is a ray test. The callback is run over a_Chunk.ForEachEntity, so the hook
+    -- already fires when the projectile and the player merely share a chunk and the
+    -- projectile is aimed at the player, up to about 16 blocks away.
+    --
+    -- Deflecting that early bounces the arrow far from the shield, and the bounce
+    -- then reaches the shooter inside the first 5 ticks, for which the engine
+    -- ignores collisions with the projectile's creator. Reproduce the engine's own
+    -- per-tick test here and only deflect when the player's expanded box is reached
+    -- within this tick's movement.
+    do
+        local Pos = Vector3d(
+            ProjectileEntity:GetPosX(),
+            ProjectileEntity:GetPosY(),
+            ProjectileEntity:GetPosZ())
+        local NextPos = Pos + (Speed * LastTickSeconds)
+        local Box = Player:GetBoundingBox()
+        Box:Expand(
+            ProjectileEntity:GetWidth() / 2,
+            ProjectileEntity:GetHeight() / 2,
+            ProjectileEntity:GetWidth() / 2)
+        local Hit, Coeff = Box:CalcLineIntersection(Pos, NextPos)
+        if (not Hit) or (Coeff > 1) then
+            -- On the projectile's ray, but not reached this tick: let it fly, the
+            -- engine calls this hook again on a later tick.
+            return false
+        end
     end
 
     -- A deflected projectile is a shield block as well. Cuberite reports no damage
@@ -1053,14 +1140,15 @@ function CheckUseShieldOnProjectileHitEntity(ProjectileEntity, Entity)
     PlayShieldBlockSound(Player)
 
     local Kind = ProjectileEntity:GetProjectileKind()
-    if (Kind ~= cProjectileEntity.pkArrow) and (Kind ~= cProjectileEntity.pkGhastFireball) then
+    if Kind ~= cProjectileEntity.pkArrow then
+        -- A fire charge or one of the "0 damage" kinds (egg, snowball, wither skull):
+        -- the shield stops it, but there is nothing to bounce -- drop it.
         ProjectileEntity:Destroy()
         return true
     end
 
     -- Deflect(For Arrows): return true so the projectile flies through (does not hit).
     -- Bounce it back by reversing its horizontal speed.
-    local Speed = ProjectileEntity:GetSpeed()
     Speed.x = -Speed.x
     Speed.z = -Speed.z
     ProjectileEntity:SetSpeed(Speed)

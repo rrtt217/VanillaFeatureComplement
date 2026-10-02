@@ -30,13 +30,24 @@ Currently includes:
 - Player death XP and off-hand drop fix
     - Players drop experience orbs worth min(7 × level, 100) on death, regardless of cause
     - The off-hand (shield) slot item is dropped on death (Cuberite clears it without dropping)
-- Village location detection
-    - `/villages [radius]` in game, and `villages <x> <z> [radius] [world]` on the console,
-      list the village grid cells near a point, nearest first, and name the village type once
-      the origin chunk is loaded
+- Also exports a cross-plugin API, since plugins do not share a Lua state and
+  `CallPlugin` resolves plain global names only:
+  `StructureLocateFindNearest(...)`, `StructureLocateFindAll(...)`,
+  `StructureLocateKinds()` and `StructureLocateAPIVersion()`. Both finders take an
+  optional table of caller-known biomes, so a caller with its own biome cache can get a
+  far-away village confirmed where the engine cannot answer
+- Structure location, as `/locate <StructureType>` (1.12-era Java style: type only, no
+  coordinates, case sensitive, searched from the executor's position)
+    - Knows `Mineshaft`, `Village`, `Desert_Pyramid`, `Jungle_Pyramid`,
+      `Swamp_Hut`, `Desert_Well` and `Fortress`; the console form is
+      `locate <StructureType> <x> <z> [radius] [world]`
     - The engine exposes nothing about structures (`cPrefab` and friends are not bound at all),
-      so the placement is reimplemented exactly, including the unbound `cNoise::IntNoise2DInt`:
-      see [docs/village-location.md](docs/village-location.md)
+      so the placement is reimplemented exactly, including the unbound
+      `cNoise::IntNoise2DInt` / `IntNoise3DInt`:
+      see [docs/structure-location.md](docs/structure-location.md)
+    - Mineshafts are unconditional and fully predictable, down to the dirt room the engine builds;
+      villages and the single-piece structures carry a biome test, so those are reported as
+      confirmed only once the origin chunk is loaded, and as a candidate until then
     - Verified end-to-end against the real generator: the predicted origins that pass the biome
       filter hold a village, the one that fails holds none
     - The chests those villages place are now stocked: village prefabs can carry only
@@ -88,8 +99,8 @@ independent Node implementation that uses native 32-bit arithmetic, so the compa
 the port instead of restating it:
 
 ```sh
-lua    tests/village_locate_test.lua
-luajit tests/village_locate_test.lua
+lua    tests/structure_locate_test.lua
+luajit tests/structure_locate_test.lua
 ```
 
 Village chest contents ship with their own suite too, covering the roller, the table

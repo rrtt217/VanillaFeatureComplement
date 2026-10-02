@@ -11,18 +11,18 @@ g_PluginInfo =
 
 	Commands =
 	{
-		["/villages"] =
+		["/locate"] =
 		{
 			Permission = "",
-			HelpString = " [radius] - lists nearby village grid cells and their village type",
+			HelpString = " <StructureType> - shows the nearest structure of that type",
 		},
 	},
 
 	ConsoleCommands =
 	{
-		["villages"] =
+		["locate"] =
 		{
-			HelpString = " <x> <z> [radius] [world] - lists village grid cells near a point",
+			HelpString = " <StructureType> <x> <z> [radius] [world] - nearest structure of that type",
 		},
 	},
 

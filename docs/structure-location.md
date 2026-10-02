@@ -1,4 +1,112 @@
-# Finding villages from a plugin
+# Finding structures from a plugin
+
+## /locate
+
+`structure_locate.lua` answers `/locate <StructureType>` in the style of the pre-1.16
+Java command, which is the one that matches this server's 1.12.2 protocol: no
+`structure` sub-keyword, case-sensitive type names, type and nothing else -- no
+coordinates and no radius, the search starts at the executor's position -- and a reply of
+the nearest structure's coordinates plus the distance. The search covers the same area
+Java's does -- a 201 x 201 chunk square centred on the executor's chunk -- and the
+coordinates are a clickable part that puts the teleport command into the chat box
+(rather than running it outright), which is what Java does as well. Cuberite's
+self-teleport is `/tp <x> <y> <z>` where Java uses `/teleport @s <x> <y> <z>`.
+
+A type the world does not generate
+fails with a reason (`Fortress` in the overworld, for instance); a type whose biome test
+cannot be run yet is still reported, but marked as a candidate.
+
+The console command is a separate entry point, because a console has no position to start
+from; there it is `locate <StructureType> <x> <z> [radius] [world]`.
+
+## Cross-plugin API
+
+Plugins do not share a Lua state: `cPluginLua` owns its own `cLuaState`, so another plugin
+cannot reach `StructureLocate` directly. The only channel is
+`cPluginManager:CallPlugin(PluginName, FunctionName, ...)`, which resolves the function with
+`lua_getglobal` -- a plain global name, no dotted path. The exported entry points are
+therefore top-level globals carrying the plugin name, not fields of a table.
+
+```lua
+local R = cPluginManager:CallPlugin("VanillaFeatureComplement", "StructureLocateFindNearest",
+    World, "Mineshaft", X, Z)
+if (R == nil) then
+    -- the plugin, or the function, is not loaded
+elseif (R.Ok) then
+    -- R.Kind, R.Display, R.X, R.Y, R.Z, R.Distance, R.Confirmed, R.OriginX, R.OriginZ
+else
+    -- R.Error: unknown type, not generated in this world, or nothing in the window
+end
+```
+
+| global | returns |
+|---|---|
+| `StructureLocateFindNearest(World, KindName, X, Z [, RadiusChunks [, Biomes]])` | one table, `{Ok = true, ...}` or `{Ok = false, Error = ...}` |
+| `StructureLocateFindAll(World, KindName, MinX, MinZ, MaxX, MaxZ [, RefX, RefZ [, Biomes]])` | one table with `Count`, `ConfirmedCount` and `Items` |
+| `StructureLocateKinds()` | a sorted array of the type names |
+| `StructureLocateAPIVersion()` | `3` |
+
+`FindNearest` searches Java's chunk window. `FindAll` takes an explicit inclusive block
+rectangle instead and returns everything inside it, sorted by distance from `(RefX, RefZ)`
+(the rectangle's centre when omitted). An oversized rectangle is refused rather than
+walked, because every grid cell costs two emulated-32-bit noise lookups: the cap is
+`MAX_CELLS`, about a 14k x 14k block region for a village grid.
+
+### Confirming with the caller's own biomes
+
+`GetBiomeAt` only answers for chunks the server has loaded, so a far-away village or
+desert pyramid comes back as a candidate with `Confirmed = false` and no way for the
+plugin to do better on its own. A caller that keeps its own biome cache can close that gap
+by passing `Biomes`: a table keyed `"blockX,blockZ"` (floored, no spaces) whose values
+are biome ids. The plugin consults it only where the engine returned -1.
+
+The engine's own answer always wins, so a wrong or stale table can only be ignored, never
+believed - a caller cannot talk the plugin into a village on a chunk the server has
+actually generated as ocean. Both forms take it; for `FindAll` it is the ninth
+argument, so `nil` has to be passed for `RefX` and `RefZ` if only the biomes matter:
+
+```lua
+local R = cPluginManager:CallPlugin("VanillaFeatureComplement", "StructureLocateFindAll",
+    World, "Village", MinX, MinZ, MaxX, MaxZ, nil, nil, MyBiomeCache)
+-- R.Count villages in range, R.ConfirmedCount of them vouched for
+```
+
+A function cannot be passed instead of the table - see the measurement below - which is
+why this is a table of values rather than a callback the plugin calls back into.
+
+The shape is deliberate, and the limits were measured rather than assumed. A probe was
+exported that echoed back what actually arrived:
+
+| argument | crosses the boundary? |
+|---|---|
+| numbers, strings, bools, nil | yes, exactly, and nils are counted |
+| tables, numeric or string keys, nested | yes, copied recursively; 256 entries arrived intact |
+| a `cWorld` | yes, as a class |
+| a function | **no** -- and neither does any table that contains one |
+
+The engine says so itself: `CopySingleValueFrom: Unsupported value: 'function' at stack
+position 4. Can only copy numbers, strings, bools, classes and simple tables!` followed
+by `Failed to copy table in pos 4`. A rejected argument makes the whole call return
+**no values at all**, which is exactly why the "always one table" contract matters:
+`nil` means the call did not land, never that the answer was empty. The other way to get
+`nil` is a name that is not a function at all: the engine logs
+`Function '<name>' not found` and returns nothing either. A plugin that answers a refusal
+does *not* do that -- it returns a table with `Ok = false` -- which is how a caller tells
+"the feature is missing" from "the answer is no".
+
+Every structure Cuberite places on a grid is a `cGridStructGen` descendant and shares the
+same cell/origin maths, so one locator covers them all:
+
+| type | source | eligibility | position |
+|---|---|---|---|
+| `Mineshaft` | `MineShafts*` in world.ini | none - always generated | the dirt room, not the grid origin |
+| `Village` | `Village*` in world.ini | all 256 biomes of the origin chunk | the grid origin |
+| `Desert_Pyramid`, `Jungle_Pyramid`, `Swamp_Hut`, `Desert_Well` | the cubeset metadata | the single biome at the origin | the grid origin |
+| `Fortress` | the NetherFort cubeset metadata | the single biome at the origin | the grid origin |
+
+The cubeset-sourced kinds also apply a `SeedOffset`, which the world.ini-sourced ones
+never do.
+
 
 ## The problem
 
@@ -10,7 +118,7 @@ is `ChunkDesc.h`. `cPrefab` has zero `tolua_begin`/`tolua_export` markers and ze
 `tolua_AllToLua_*Prefab*` symbols in the binary, against 48 for `cBlockArea`.
 
 What the engine *does* have is a fully deterministic placement algorithm, and that is what
-`village_locate.lua` reimplements.
+`structure_locate.lua` reimplements.
 
 ## The algorithm
 
@@ -77,7 +185,7 @@ chunk -- see above for when they are valid.
 
 ## Verification
 
-*Offline.* `tests/village_locate_test.lua` (170 checks) compares the port against an
+*Offline.* `tests/structure_locate_test.lua` (108 checks) compares the port against an
 independent Node implementation that uses native 32-bit arithmetic (`Math.imul`, `<<`, `^`,
 `&`) -- 72 noise cases, 12 origin cases, 4 candidate enumerations, multiply/XOR tables and
 pool-pick indices. The Lua emulation must agree with the native one, so this tests the port

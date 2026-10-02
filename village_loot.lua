@@ -3,7 +3,7 @@
 -- Gives village chests real contents.
 --
 -- Why this has to exist: a prefab carries only BLOCKTYPE + NIBBLETYPE, so it cannot
--- describe what is inside a container (see docs/village-location.md). The village
+-- describe what is inside a container (see docs/structure-location.md). The village
 -- cubesets do place chests -- PlainsVillage has four, in Forge, WoodenGranary,
 -- WoodenChurchMid and WoodenMill5x5 -- but the engine materialises them as empty
 -- cChestEntity objects.
@@ -30,7 +30,7 @@
 -- Treat the numbers as a starting point rather than as copied vanilla data. They are
 -- plain data; edit them freely.
 
--- luacheck: globals VillageLocate
+-- luacheck: globals StructureLocate
 
 VillageLoot = {}
 
@@ -248,12 +248,11 @@ local function GetConfig(World)
 	local Name = World:GetName()
 	local Cached = ConfigCache[Name]
 	if (Cached == nil) then
-		local Cfg = VillageLocate.GetGeneratorConfig(World)
-		if (Cfg == nil) then
+		Cached = StructureLocate.GetConfig(World, StructureLocate.Kinds.Village)
+		if (Cached == nil) then
 			ConfigCache[Name] = false
 			return nil
 		end
-		Cached = { Seed = Cfg.Seed, GridSize = Cfg.GridSize, MaxOffset = Cfg.MaxOffset, MaxSize = Cfg.MaxSize }
 		ConfigCache[Name] = Cached
 	end
 	if (Cached == false) then
@@ -276,10 +275,12 @@ local function MayContainVillage(World, ChunkX, ChunkZ)
 	end
 	local MinX, MaxX = ChunkX * 16, ChunkX * 16 + 15
 	local MinZ, MaxZ = ChunkZ * 16, ChunkZ * 16 + 15
-	for _, Candidate in ipairs(VillageLocate.GetCandidates(Cfg, MinX, MaxX, MinZ, MaxZ)) do
+	for _, Candidate in ipairs(StructureLocate.GetCandidates(Cfg, MinX, MaxX, MinZ, MaxZ)) do
 		if
-			(Candidate.OriginX + Cfg.MaxSize >= MinX) and (Candidate.OriginX - Cfg.MaxSize <= MaxX) and
-			(Candidate.OriginZ + Cfg.MaxSize >= MinZ) and (Candidate.OriginZ - Cfg.MaxSize <= MaxZ)
+			(Candidate.OriginX + Cfg.MaxStructureSizeX >= MinX) and
+			(Candidate.OriginX - Cfg.MaxStructureSizeX <= MaxX) and
+			(Candidate.OriginZ + Cfg.MaxStructureSizeZ >= MinZ) and
+			(Candidate.OriginZ - Cfg.MaxStructureSizeZ <= MaxZ)
 		then
 			return true
 		end

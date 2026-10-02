@@ -72,11 +72,12 @@ end
 
 -- Stub of the sibling module. village_loot only uses it to decide whether a chunk can
 -- hold a village at all, so a controllable stub is enough here; the real placement
--- maths is covered by village_locate_test.lua.
+-- maths is covered by structure_locate_test.lua.
 local StubCandidates = { { CellX = 0, CellZ = 0, OriginX = 0, OriginZ = 0 } }
-VillageLocate =
+StructureLocate =
 {
-	GetGeneratorConfig = function(World) return World.Cfg end,
+	Kinds = { Village = { Display = "村庄" } },
+	GetConfig = function(World) return World.Cfg end,
 	GetCandidates = function() return StubCandidates end,
 }
 
@@ -147,7 +148,8 @@ local function MakeWorld(Name, Cfg)
 	return { GetName = function() return Name end, Cfg = Cfg }
 end
 
-local DEFAULT_CFG = { Seed = 1402121502, GridSize = 384, MaxOffset = 128, MaxSize = 128 }
+local DEFAULT_CFG = { Seed = 1402121502, GridSizeX = 384, GridSizeZ = 384,
+	MaxOffsetX = 128, MaxOffsetZ = 128, MaxStructureSizeX = 128, MaxStructureSizeZ = 128 }
 local WorldNr = 0
 local function FreshWorld()
 	WorldNr = WorldNr + 1

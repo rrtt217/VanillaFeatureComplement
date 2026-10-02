@@ -5,9 +5,9 @@
 g_PluginInfo =
 {
 	Name = "VanillaFeatureComplement",
-	Version = "5",
-	Date = "2026-10-01",
-	Description = [[Re-implements missing vanilla Minecraft features in Cuberite: map zoom-out & cloning, end platform generation, elytra powered flight, sleeping clears the weather, shields, player-death XP / off-hand drops, village location detection, and contents for the chests village prefabs place but cannot stock.]],
+	Version = "6",
+	Date = "2026-10-02",
+	Description = [[Re-implements missing vanilla Minecraft features in Cuberite: map zoom-out & cloning, end platform generation, elytra powered flight, sleeping clears the weather, shields, player-death XP / off-hand drops, structure location, contents for the chests village prefabs place but cannot stock, and the villagers Cuberite never spawns in its villages.]],
 
 	Commands =
 	{

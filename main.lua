@@ -77,7 +77,7 @@ end
 
 function Initialize(Plugin)
 	Plugin:SetName("VanillaFeatureComplement")
-	Plugin:SetVersion(5)
+	Plugin:SetVersion(6)
 
     -- Load Config
     local path = Plugin:GetLocalFolder() .. "/settings.ini"
@@ -141,6 +141,14 @@ function Initialize(Plugin)
         LOG("HOOK_CHUNK_GENERATED has been added to EnableVillageLoot!")
         VillageLoot.Enabled = true
         cPluginManager:AddHook(cPluginManager.HOOK_CHUNK_GENERATED,VillageLoot.OnChunkGenerated)
+    end
+    if Config:GetValueSetB("Features","EnableVillageVillagers",true) then
+        LOG("HOOK_CHUNK_AVAILABLE has been added to EnableVillageVillagers!")
+        VillageVillagers.Enabled = true
+        VillageVillagers.PerVillage = Config:GetValueSetI("Features","VillageVillagersPerVillage",6)
+        VillageVillagers.OriginsPerTick = Config:GetValueSetI("Features","VillageVillagersPerTick",2)
+        cPluginManager:AddHook(cPluginManager.HOOK_CHUNK_AVAILABLE,VillageVillagers.OnChunkAvailable)
+        cPluginManager:AddHook(cPluginManager.HOOK_WORLD_TICK,VillageVillagers.OnWorldTick)
     end
     -- Per-player state lifecycle: reset on death, clean up on disconnect.
     cPluginManager:AddHook(cPluginManager.HOOK_KILLING,ResetCombatStateOnKilling)
